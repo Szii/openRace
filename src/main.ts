@@ -4,12 +4,10 @@ import {
   Cartesian3,
   Cartographic,
   Math as CesiumMath,
-  Color,
   Terrain,
   createOsmBuildingsAsync,
   createGooglePhotorealistic3DTileset,
   HeadingPitchRoll,
-  HeadingPitchRange,
   Transforms,
   Matrix4,
   CallbackProperty,
@@ -111,24 +109,39 @@ const BRAKE = 26;
 const FRICTION = 6;
 const TURN_RATE = 1.7; // rad/s at full lock
 
+// The glTF's nose does not necessarily point along +Y, so rotate the model to
+// line its nose up with the travel direction. Tweak by ±90°/180° if the car
+// looks sideways or backwards.
+const MODEL_HEADING_OFFSET = CesiumMath.toRadians(-90);
+const CAR_GROUND_OFFSET = 0.2; // metres the model sits above the sampled ground
+
+// Chase camera placement (metres), computed explicitly to avoid convention bugs.
+const CAM_DIST = 18; // how far behind the car
+const CAM_HEIGHT = 7; // how high above the car
+const CAM_LOOK_AHEAD = 8; // aim point ahead of the car
+
 function resetCar(): void {
   Cartesian3.fromRadians(START.lon, START.lat, 20, undefined, carPos);
   carHeading = START.heading;
   speed = 0;
 }
 
-// The car is a simple box for now — swap for a glTF model later.
+// The car: a glTF model, positioned and oriented from the driving state.
 viewer.entities.add({
   position: new CallbackProperty(() => carPos, false) as any,
   orientation: new CallbackProperty(
-    () => Transforms.headingPitchRollQuaternion(carPos, new HeadingPitchRoll(carHeading, 0, 0)),
+    () =>
+      Transforms.headingPitchRollQuaternion(
+        carPos,
+        new HeadingPitchRoll(carHeading + MODEL_HEADING_OFFSET, 0, 0)
+      ),
     false
   ) as any,
-  box: {
-    dimensions: new Cartesian3(2.0, 4.6, 1.5), // width (E/W), length (fwd), height
-    material: Color.fromCssColorString('#e23a2e'),
-    outline: true,
-    outlineColor: Color.BLACK,
+  model: {
+    uri: '/models/car.glb',
+    minimumPixelSize: 48,
+    maximumScale: 40,
+    scale: 1.0,
   },
 });
 
@@ -202,19 +215,41 @@ viewer.scene.preRender.addEventListener(() => {
   // Clamp the car to the ground so it hugs the terrain.
   const carto = Cartographic.fromCartesian(carPos);
   const ground = viewer.scene.globe.getHeight(carto);
-  const h = (ground !== undefined ? ground : carto.height) + 0.75;
+  const h = (ground !== undefined ? ground : carto.height) + CAR_GROUND_OFFSET;
   Cartesian3.fromRadians(carto.longitude, carto.latitude, h, undefined, carPos);
 
   // HUD
   speedEl.textContent = `${Math.round(Math.abs(speed) * 3.6)} km/h`;
 
-  // Chase camera: sit behind and slightly above the car, looking forward.
+  // Chase camera: sit behind and above the car, aimed just ahead of it.
+  // Built from explicit world vectors so "forward" is always into the screen.
   if (chaseCam) {
-    const frame = Transforms.eastNorthUpToFixedFrame(carPos);
-    viewer.camera.lookAtTransform(
-      frame,
-      new HeadingPitchRange(carHeading + Math.PI, CesiumMath.toRadians(-14), 18)
+    const up = Matrix4.multiplyByPointAsVector(
+      Transforms.eastNorthUpToFixedFrame(carPos),
+      new Cartesian3(0, 0, 1),
+      new Cartesian3()
     );
+    Cartesian3.normalize(up, up);
+
+    // camPos = carPos - forward * CAM_DIST + up * CAM_HEIGHT
+    const camPos = Cartesian3.clone(carPos, new Cartesian3());
+    Cartesian3.add(
+      camPos,
+      Cartesian3.multiplyByScalar(worldForward, -CAM_DIST, new Cartesian3()),
+      camPos
+    );
+    Cartesian3.add(camPos, Cartesian3.multiplyByScalar(up, CAM_HEIGHT, new Cartesian3()), camPos);
+
+    // Look at a point a little ahead of the car.
+    const target = Cartesian3.add(
+      carPos,
+      Cartesian3.multiplyByScalar(worldForward, CAM_LOOK_AHEAD, new Cartesian3()),
+      new Cartesian3()
+    );
+    const direction = Cartesian3.subtract(target, camPos, new Cartesian3());
+    Cartesian3.normalize(direction, direction);
+
+    viewer.camera.setView({ destination: camPos, orientation: { direction, up } });
   }
 });
 

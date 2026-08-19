@@ -47,18 +47,24 @@ For true photogrammetry ("Google Earth") data, enable Google's **Map Tiles API**
 ## How it works
 
 - `src/main.ts` sets up the Cesium scene, loads terrain/imagery/buildings, spawns the
-  car (currently a box — swap for a glTF model), and runs the driving loop.
+  car (a glTF model in `public/models/car.glb`), and runs the driving loop.
 - The car is moved along its heading in a local East-North-Up frame each frame and
   clamped to the ground height so it hugs the terrain.
 - A chase camera follows from behind via `camera.lookAtTransform`.
 
 ## Roadmap
 
-- [ ] Replace the box with a proper glTF car model + wheels.
+- [x] glTF car model.
 - [ ] Snap the car to the OSM road network (query road geometry) for on-rails driving.
 - [ ] Collision against 3D buildings.
 - [ ] Location search / spawn anywhere.
 - [ ] Multiplayer.
+
+## Credits
+
+Vehicle model: **CesiumMilkTruck** from the
+[Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)
+(royalty-free).
 
 ## Security note
 
