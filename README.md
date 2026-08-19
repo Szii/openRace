@@ -25,7 +25,10 @@ npm run dev
 ```
 
 Then open the URL Vite prints (usually http://localhost:5173). It works with **no
-setup** — with no keys it falls back to raw OpenStreetMap street tiles on flat ground.
+setup**: with no keys it draws OpenStreetMap street tiles and builds a **3D city by
+extruding OSM building footprints** and rendering the OSM road network in 3D. A HUD
+line shows what loaded (e.g. `1,240 buildings · 1,141 roads`). Adding a Cesium ion
+token on top of this also gives real terrain elevation and textured buildings.
 
 ## Getting the good visuals (real terrain + 3D buildings)
 

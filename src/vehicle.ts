@@ -49,7 +49,8 @@ export class Vehicle {
   /** Advance speed, steering and heading. Position is integrated by the caller. */
   update(dt: number, input: DriveInput): void {
     // ---- steering: ease toward target, and reduce lock at high speed ----
-    const dir = (input.left ? 1 : 0) - (input.right ? 1 : 0);
+    // Heading is clockwise-from-north, so a right turn = positive steer/heading.
+    const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
     const speedFactor = 1 - Math.min(Math.abs(this.speed) / this.maxSpeed, 0.75);
     const targetSteer = dir * this.maxSteer * speedFactor;
     const maxStep = this.steerRate * dt * (dir === 0 ? 1.6 : 1); // recenters faster

@@ -111,6 +111,76 @@ out body;`;
   return roads;
 }
 
+export interface Building {
+  points: OsmPoint[]; // footprint ring
+  height: number; // metres
+}
+
+/** Building height in metres from OSM tags, with a sensible default. */
+function buildingHeight(t: Record<string, string>): number {
+  if (t.height) {
+    const h = parseFloat(t.height);
+    if (!isNaN(h)) return Math.max(3, h);
+  }
+  if (t['building:levels']) {
+    const levels = parseFloat(t['building:levels']);
+    if (!isNaN(levels)) return Math.max(3, levels * 3.2);
+  }
+  return 9; // ~3 floors
+}
+
+/**
+ * Fetch building footprints within `radius` metres and give each an extrusion
+ * height. Used to build a 3D city when no Cesium ion / Google key is present.
+ */
+export async function fetchBuildings(lat: number, lon: number, radius: number): Promise<Building[]> {
+  const cacheKey = `osm-bldg:${lat.toFixed(4)}:${lon.toFixed(4)}:${radius}`;
+  const cached = localStorage.getItem(cacheKey);
+  if (cached) {
+    try {
+      return JSON.parse(cached) as Building[];
+    } catch {
+      /* refetch */
+    }
+  }
+
+  const query = `[out:json][timeout:60];
+way["building"](around:${radius},${lat},${lon});
+(._;>;);
+out body;`;
+  const data = await overpassRequest(query);
+
+  const nodes = new Map<number, OsmPoint>();
+  for (const el of data.elements) {
+    if (el.type === 'node') nodes.set(el.id, { lon: el.lon, lat: el.lat });
+  }
+
+  const buildings: Building[] = [];
+  for (const el of data.elements) {
+    if (el.type !== 'way' || !el.tags || !el.tags.building) continue;
+    const points: OsmPoint[] = [];
+    for (const ref of el.nodes as number[]) {
+      const n = nodes.get(ref);
+      if (n) points.push(n);
+    }
+    // Drop the duplicate closing vertex if present.
+    if (points.length > 1) {
+      const a = points[0];
+      const b = points[points.length - 1];
+      if (a.lon === b.lon && a.lat === b.lat) points.pop();
+    }
+    if (points.length < 3) continue;
+    buildings.push({ points, height: buildingHeight(el.tags) });
+  }
+
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify(buildings));
+  } catch {
+    /* quota — skip caching */
+  }
+  return buildings;
+}
+
 const DEFAULT_LANES: Record<string, number> = {
   motorway: 6, motorway_link: 2, trunk: 4, trunk_link: 2, primary: 4, primary_link: 2,
   secondary: 3, secondary_link: 2, tertiary: 2, tertiary_link: 2, unclassified: 2,

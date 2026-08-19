@@ -13,8 +13,9 @@ import {
   CallbackProperty,
   OpenStreetMapImageryProvider,
 } from 'cesium';
-import { fetchRoads } from './osm';
+import { fetchRoads, fetchBuildings } from './osm';
 import { buildRoads } from './roads';
+import { buildBuildings } from './buildings';
 import { Vehicle } from './vehicle';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,7 @@ if (hasIon) Ion.defaultAccessToken = ionToken!;
 
 const loadingEl = document.getElementById('loading')!;
 const speedEl = document.getElementById('speed')!;
+const statusEl = document.getElementById('status')!;
 
 // ---------------------------------------------------------------------------
 // Scene
@@ -97,33 +99,52 @@ async function loadWorld(): Promise<void> {
     );
   }
 
+  let buildingStatus = '';
   if (googleKey) {
     try {
       const google = await (createGooglePhotorealistic3DTileset as any)({ key: googleKey });
       viewer.scene.primitives.add(google);
       viewer.scene.globe.show = false;
+      buildingStatus = 'Google 3D';
     } catch (err) {
       console.warn('Google 3D Tiles failed to load, continuing without them.', err);
     }
   } else if (hasIon) {
     try {
       viewer.scene.primitives.add(await createOsmBuildingsAsync());
+      buildingStatus = 'ion buildings';
     } catch (err) {
       console.warn('OSM Buildings failed to load.', err);
+    }
+  } else {
+    // No keys: extrude a 3D city ourselves from OSM building footprints.
+    loadingEl.textContent = 'Loading buildings…';
+    try {
+      const buildings = await fetchBuildings(START.lat, START.lon, 700);
+      const n = buildBuildings(viewer.scene, buildings);
+      buildingStatus = `${n.toLocaleString()} buildings`;
+    } catch (err) {
+      console.warn('Buildings failed to load (Overpass).', err);
+      buildingStatus = 'buildings failed';
     }
   }
 
   // Real OSM road network as 3D geometry (draped roads + floating bridges).
   loadingEl.textContent = 'Loading streets…';
+  let roadStatus = '';
   try {
     const roads = await fetchRoads(START.lat, START.lon, 1200);
     const result = await buildRoads(viewer.scene, viewer.terrainProvider, roads);
     console.log(
       `Roads: ${result.total} segments (${result.ground} ground, ${result.bridges} bridges).`
     );
+    roadStatus = `${result.total.toLocaleString()} roads`;
   } catch (err) {
     console.warn('Road network failed to load (Overpass).', err);
+    roadStatus = 'roads failed';
   }
+
+  statusEl.textContent = [buildingStatus, roadStatus].filter(Boolean).join(' · ');
 
   loadingEl.classList.add('hidden');
   setTimeout(() => loadingEl.remove(), 700);

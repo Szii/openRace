@@ -28,6 +28,12 @@ body {
   letter-spacing: 0.5px;
 }
 
+#status {
+  font-size: 12px;
+  opacity: 0.8;
+  margin-top: 2px;
+}
+
 .help {
   font-size: 13px;
   opacity: 0.9;
