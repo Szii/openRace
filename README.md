@@ -46,25 +46,37 @@ For true photogrammetry ("Google Earth") data, enable Google's **Map Tiles API**
 
 ## How it works
 
-- `src/main.ts` sets up the Cesium scene, loads terrain/imagery/buildings, spawns the
-  car (a glTF model in `public/models/car.glb`), and runs the driving loop.
-- The car is moved along its heading in a local East-North-Up frame each frame and
-  clamped to the ground height so it hugs the terrain.
-- A chase camera follows from behind via `camera.lookAtTransform`.
+- `src/main.ts` sets up the Cesium scene, loads terrain/imagery/buildings/roads,
+  spawns the car (`public/models/car.glb`), and runs the driving loop.
+- `src/osm.ts` fetches the real road network from the OpenStreetMap **Overpass API**
+  (with mirror fallback + localStorage caching) and models each road's class, lanes,
+  and `bridge`/`tunnel`/`layer` tags.
+- `src/roads.ts` renders roads as 3D corridors: normal roads are *draped on the
+  terrain* (`GroundPrimitive`) so they follow elevation, **bridges float** at their
+  OSM layer height, and tunnels are hidden — giving real over/under crossings.
+- `src/vehicle.ts` is a kinematic **bicycle model**: wheelbase-based turning that
+  tightens with speed, engine/brake forces, aero drag, rolling resistance and reverse.
+- Each frame the car integrates along its heading in a local East-North-Up frame,
+  clamps to terrain height, and pitches/rolls to match the ground slope. A
+  vector-based chase camera follows from behind.
 
 ## Roadmap
 
 - [x] glTF car model.
-- [ ] Snap the car to the OSM road network (query road geometry) for on-rails driving.
+- [x] Real OSM road network rendered in 3D (draped roads + floating bridges, tunnels hidden).
+- [x] Realistic driving model (kinematic bicycle model) + terrain slope tilt.
+- [ ] Drive *onto* bridge decks / correct surface when roads stack (needs a road graph + layer-aware ground query).
 - [ ] Collision against 3D buildings.
 - [ ] Location search / spawn anywhere.
 - [ ] Multiplayer.
 
-## Credits
+## Data & attribution
 
-Vehicle model: **CesiumMilkTruck** from the
-[Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)
-(royalty-free).
+- Road network © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors,
+  fetched via the [Overpass API](https://overpass-api.de/).
+- Vehicle model: **CesiumMilkTruck** from the
+  [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)
+  (royalty-free).
 
 ## Security note
 
