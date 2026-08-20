@@ -58,8 +58,10 @@ viewer.scene.screenSpaceCameraController.enableInputs = false;
 // ---------------------------------------------------------------------------
 // Car state
 // ---------------------------------------------------------------------------
-// Start on a well-mapped street: Times Square, Manhattan.
-const START = { lon: -73.9866, lat: 40.7549, headingDeg: 180 };
+// Start at the Golden Gate Bridge / Presidio, San Francisco: low building
+// density, the Golden Gate Bridge + Presidio Parkway viaducts, and the
+// MacArthur / Presidio Parkway tunnels all nearby to show off bridges & tunnels.
+const START = { lon: -122.475, lat: 37.8065, headingDeg: 0 };
 
 const vehicle = new Vehicle(
   CesiumMath.toRadians(START.lon),
