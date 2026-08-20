@@ -17,6 +17,7 @@ import {
 import { fetchRoads, fetchBuildings } from './osm';
 import { buildRoads } from './roads';
 import { buildBuildings } from './buildings';
+import { buildTunnels } from './tunnels';
 import { Vehicle } from './vehicle';
 
 // ---------------------------------------------------------------------------
@@ -72,6 +73,9 @@ let modelRoll = 0;
 let lastGround = 0;
 // The translucent drivable-road overlay; toggled with the M key.
 let roadOverlay: { show: boolean } | undefined;
+// Carved tunnel bits; toggled with the T key.
+let tunnelClip: { enabled: boolean } | undefined;
+let tunnelPrimitive: { show: boolean } | undefined;
 
 // Align the glTF's nose with the travel direction (tweak by ±90/180 if needed).
 const MODEL_HEADING_OFFSET = CesiumMath.toRadians(-90);
@@ -199,6 +203,16 @@ async function loadWorld(): Promise<void> {
     roadOverlay = result.groundPrimitive;
     if (roadOverlay) roadOverlay.show = !hasIon;
     roadStatus = `${result.total.toLocaleString()} roads`;
+
+    // Carve the tunnels out of the terrain and render their interiors.
+    try {
+      const t = await buildTunnels(viewer.scene, viewer.terrainProvider, roads);
+      tunnelClip = t.collection;
+      tunnelPrimitive = t.primitive;
+      if (t.count) roadStatus += ` · ${t.count} tunnels`;
+    } catch (err) {
+      console.warn('Tunnel carving failed.', err);
+    }
   } catch (err) {
     console.warn('Road network failed to load (Overpass).', err);
     roadStatus = 'roads failed';
@@ -232,6 +246,10 @@ window.addEventListener('keydown', (e) => {
   keys.add(k);
   if (k === 'r') vehicle.reset();
   if (k === 'm' && roadOverlay) roadOverlay.show = !roadOverlay.show;
+  if (k === 't') {
+    if (tunnelClip) tunnelClip.enabled = !tunnelClip.enabled;
+    if (tunnelPrimitive) tunnelPrimitive.show = !tunnelPrimitive.show;
+  }
   if (k === 'c') cycleCameraView();
   if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
 });
