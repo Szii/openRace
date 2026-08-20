@@ -10,6 +10,7 @@ import {
   HeadingPitchRoll,
   Transforms,
   Matrix4,
+  Ray,
   CallbackProperty,
   OpenStreetMapImageryProvider,
 } from 'cesium';
@@ -73,11 +74,13 @@ let roadOverlay: { show: boolean } | undefined;
 const MODEL_HEADING_OFFSET = CesiumMath.toRadians(-90);
 const CAR_GROUND_OFFSET = 0.2; // metres above sampled ground
 
-// Chase camera placement (metres). Pulled back for a truer sense of scale, but
-// kept fairly low so it's less prone to catching overhead structures.
-const CAM_DIST = 24;
-const CAM_HEIGHT = 7;
-const CAM_LOOK_AHEAD = 10;
+// Chase camera placement (metres): closer and lower behind the car.
+const CAM_DIST = 11;
+const CAM_HEIGHT = 4.5;
+const CAM_LOOK_AHEAD = 6;
+// Fraction of the desired camera distance actually used; the decoupled
+// obstruction check (below) pulls this in when a building blocks the view.
+let camDistRatio = 1;
 
 const carEntity = viewer.entities.add({
   position: new CallbackProperty(() => carPos, false) as any,
@@ -89,7 +92,7 @@ const carEntity = viewer.entities.add({
       ),
     false
   ) as any,
-  model: { uri: '/models/car.glb', scale: 0.9 },
+  model: { uri: '/models/car.glb', scale: 0.55 },
 });
 
 // ---------------------------------------------------------------------------
@@ -252,13 +255,33 @@ viewer.scene.preRender.addEventListener(() => {
     );
     Cartesian3.normalize(up, up);
 
-    const camPos = Cartesian3.clone(carPos, new Cartesian3());
-    Cartesian3.add(
-      camPos,
-      Cartesian3.multiplyByScalar(worldForward, -CAM_DIST, new Cartesian3()),
-      camPos
+    // Desired camera sits behind + above the car; camDistRatio (set by the
+    // decoupled obstruction check) pulls it in when a building is in the way.
+    const eye = Cartesian3.add(
+      carPos,
+      Cartesian3.multiplyByScalar(up, 1.5, new Cartesian3()),
+      new Cartesian3()
     );
-    Cartesian3.add(camPos, Cartesian3.multiplyByScalar(up, CAM_HEIGHT, new Cartesian3()), camPos);
+    const offset = Cartesian3.add(
+      Cartesian3.multiplyByScalar(worldForward, -CAM_DIST, new Cartesian3()),
+      Cartesian3.multiplyByScalar(up, CAM_HEIGHT, new Cartesian3()),
+      new Cartesian3()
+    );
+    const desired = Cartesian3.add(carPos, offset, new Cartesian3());
+    const camPos = Cartesian3.lerp(eye, desired, camDistRatio, new Cartesian3());
+
+    // Keep the camera from dipping below the ground on slopes (cheap, no pick).
+    const camCarto = Cartographic.fromCartesian(camPos);
+    const camGround = viewer.scene.globe.getHeight(camCarto);
+    if (camGround !== undefined && camCarto.height < camGround + 2) {
+      Cartesian3.fromRadians(
+        camCarto.longitude,
+        camCarto.latitude,
+        camGround + 2,
+        undefined,
+        camPos
+      );
+    }
 
     const target = Cartesian3.add(
       carPos,
@@ -271,5 +294,50 @@ viewer.scene.preRender.addEventListener(() => {
     viewer.camera.setView({ destination: camPos, orientation: { direction, up } });
   }
 });
+
+// Camera-obstruction check. Runs on a timer OUTSIDE the render loop: casting a
+// pick ray inside preRender previously broke primitive rendering, so here the
+// pick just updates camDistRatio, which the chase camera reads next frame.
+setInterval(() => {
+  const pickScene = viewer.scene as any; // pickFromRay isn't in the public types
+  if (!chaseCam || !pickScene.pickFromRay) {
+    camDistRatio = 1;
+    return;
+  }
+  const enu = Transforms.eastNorthUpToFixedFrame(carPos);
+  const up = Cartesian3.normalize(
+    Matrix4.multiplyByPointAsVector(enu, new Cartesian3(0, 0, 1), new Cartesian3()),
+    new Cartesian3()
+  );
+  const fwd = Cartesian3.normalize(
+    Matrix4.multiplyByPointAsVector(
+      enu,
+      new Cartesian3(Math.sin(vehicle.heading), Math.cos(vehicle.heading), 0),
+      new Cartesian3()
+    ),
+    new Cartesian3()
+  );
+  const eye = Cartesian3.add(carPos, Cartesian3.multiplyByScalar(up, 1.5, new Cartesian3()), new Cartesian3());
+  const offset = Cartesian3.add(
+    Cartesian3.multiplyByScalar(fwd, -CAM_DIST, new Cartesian3()),
+    Cartesian3.multiplyByScalar(up, CAM_HEIGHT, new Cartesian3()),
+    new Cartesian3()
+  );
+  const desired = Cartesian3.add(carPos, offset, new Cartesian3());
+  const dir = Cartesian3.subtract(desired, eye, new Cartesian3());
+  const full = Cartesian3.magnitude(dir);
+  Cartesian3.normalize(dir, dir);
+  try {
+    const hit = pickScene.pickFromRay(new Ray(eye, dir), [carEntity]);
+    if (hit?.position) {
+      const d = Cartesian3.distance(eye, hit.position);
+      camDistRatio = d < full ? Math.max((d - 1) / full, 0.25) : 1;
+    } else {
+      camDistRatio = 1;
+    }
+  } catch {
+    camDistRatio = 1;
+  }
+}, 60);
 
 loadWorld();
