@@ -10,7 +10,6 @@ import {
   HeadingPitchRoll,
   Transforms,
   Matrix4,
-  Ray,
   CallbackProperty,
   OpenStreetMapImageryProvider,
 } from 'cesium';
@@ -260,32 +259,6 @@ viewer.scene.preRender.addEventListener(() => {
       camPos
     );
     Cartesian3.add(camPos, Cartesian3.multiplyByScalar(up, CAM_HEIGHT, new Cartesian3()), camPos);
-
-    // Collision avoidance: if a building/deck is between the car and the desired
-    // camera spot, pull the camera in front of it so we never see inside walls.
-    const eye = Cartesian3.add(
-      carPos,
-      Cartesian3.multiplyByScalar(up, 2.0, new Cartesian3()),
-      new Cartesian3()
-    );
-    const toCam = Cartesian3.subtract(camPos, eye, new Cartesian3());
-    const wantDist = Cartesian3.magnitude(toCam);
-    const camDir = Cartesian3.normalize(toCam, new Cartesian3());
-    const pickScene = viewer.scene as any; // pickFromRay isn't in the public types
-    if (pickScene.pickFromRay) {
-      try {
-        const hit = pickScene.pickFromRay(new Ray(eye, camDir), [carEntity]);
-        if (hit?.position) {
-          const hitDist = Cartesian3.distance(eye, hit.position);
-          if (hitDist < wantDist) {
-            const d = Math.max(hitDist - 1.0, 3.0);
-            Cartesian3.add(eye, Cartesian3.multiplyByScalar(camDir, d, new Cartesian3()), camPos);
-          }
-        }
-      } catch {
-        /* pickFromRay can throw before the depth buffer is ready — ignore */
-      }
-    }
 
     const target = Cartesian3.add(
       carPos,
