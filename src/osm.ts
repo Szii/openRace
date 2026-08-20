@@ -28,16 +28,22 @@ const OVERPASS_ENDPOINTS = [
 async function overpassRequest(query: string): Promise<any> {
   let lastErr: unknown;
   for (const endpoint of OVERPASS_ENDPOINTS) {
+    // Abort a stalled mirror so we fail over instead of hanging forever.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
         body: 'data=' + encodeURIComponent(query),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`${endpoint} -> ${res.status}`);
       return await res.json();
     } catch (err) {
       lastErr = err;
       console.warn('Overpass mirror failed, trying next…', err);
+    } finally {
+      clearTimeout(timeout);
     }
   }
   throw new Error(`All Overpass mirrors failed: ${lastErr}`);

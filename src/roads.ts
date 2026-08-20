@@ -25,14 +25,17 @@ import { roadColorCss, roadWidth, type RoadSegment } from './osm';
 const LEVEL_HEIGHT = 6; // metres of clearance per OSM layer level
 const DECK_THICKNESS = 0.5; // visual thickness of a bridge deck
 
-function color(r: RoadSegment): Color {
-  return Color.fromCssColorString(roadColorCss(r)).withAlpha(0.92);
+function color(r: RoadSegment, alpha: number): Color {
+  return Color.fromCssColorString(roadColorCss(r)).withAlpha(alpha);
 }
 
 export interface BuildResult {
   total: number;
   ground: number;
   bridges: number;
+  /** The draped ground-road overlay (translucent). Toggle its `.show`. */
+  groundPrimitive?: GroundPrimitive;
+  bridgePrimitive?: Primitive;
 }
 
 export async function buildRoads(
@@ -62,23 +65,25 @@ export async function buildRoads(
           cornerType: CornerType.ROUNDED,
           vertexFormat: PerInstanceColorAppearance.VERTEX_FORMAT,
         }),
-        attributes: { color: ColorGeometryInstanceAttribute.fromColor(color(r)) },
+        attributes: { color: ColorGeometryInstanceAttribute.fromColor(color(r, 0.55)) },
       })
     );
   }
 
-  // Draped ground roads — one batched primitive follows the terrain.
+  // Draped ground roads — one batched primitive follows the terrain. Kept
+  // translucent so photorealistic imagery still reads through it.
+  let groundPrimitive: GroundPrimitive | undefined;
   if (groundInstances.length) {
-    scene.primitives.add(
-      new GroundPrimitive({
-        geometryInstances: groundInstances,
-        appearance: new PerInstanceColorAppearance({ flat: true }),
-      })
-    );
+    groundPrimitive = new GroundPrimitive({
+      geometryInstances: groundInstances,
+      appearance: new PerInstanceColorAppearance({ flat: true }),
+    });
+    scene.primitives.add(groundPrimitive);
   }
 
   // Bridges need real terrain heights so the deck floats a fixed clearance above.
   let bridgeCount = 0;
+  let bridgePrimitive: Primitive | undefined;
   if (bridges.length) {
     try {
       await sampleTerrainMostDetailed(terrainProvider, bridgeSampleCartos);
@@ -107,19 +112,24 @@ export async function buildRoads(
             extrudedHeight: deckTop,
             vertexFormat: PerInstanceColorAppearance.VERTEX_FORMAT,
           }),
-          attributes: { color: ColorGeometryInstanceAttribute.fromColor(color(r)) },
+          attributes: { color: ColorGeometryInstanceAttribute.fromColor(color(r, 0.95)) },
         })
       );
       bridgeCount++;
     }
 
-    scene.primitives.add(
-      new Primitive({
-        geometryInstances: bridgeInstances,
-        appearance: new PerInstanceColorAppearance({ closed: true }),
-      })
-    );
+    bridgePrimitive = new Primitive({
+      geometryInstances: bridgeInstances,
+      appearance: new PerInstanceColorAppearance({ closed: true }),
+    });
+    scene.primitives.add(bridgePrimitive);
   }
 
-  return { total: roads.length, ground: groundInstances.length, bridges: bridgeCount };
+  return {
+    total: roads.length,
+    ground: groundInstances.length,
+    bridges: bridgeCount,
+    groundPrimitive,
+    bridgePrimitive,
+  };
 }

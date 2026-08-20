@@ -66,15 +66,17 @@ const carPos = Cartesian3.fromRadians(vehicle.lon, vehicle.lat, 20);
 let modelPitch = 0;
 let modelRoll = 0;
 let lastGround = 0;
+// The translucent drivable-road overlay; toggled with the M key.
+let roadOverlay: { show: boolean } | undefined;
 
 // Align the glTF's nose with the travel direction (tweak by ±90/180 if needed).
 const MODEL_HEADING_OFFSET = CesiumMath.toRadians(-90);
 const CAR_GROUND_OFFSET = 0.2; // metres above sampled ground
 
-// Chase camera placement (metres).
-const CAM_DIST = 18;
-const CAM_HEIGHT = 7;
-const CAM_LOOK_AHEAD = 8;
+// Chase camera placement (metres). Pulled back/up for a truer sense of scale.
+const CAM_DIST = 24;
+const CAM_HEIGHT = 9;
+const CAM_LOOK_AHEAD = 10;
 
 viewer.entities.add({
   position: new CallbackProperty(() => carPos, false) as any,
@@ -86,7 +88,7 @@ viewer.entities.add({
       ),
     false
   ) as any,
-  model: { uri: '/models/car.glb', minimumPixelSize: 48, maximumScale: 40, scale: 1.0 },
+  model: { uri: '/models/car.glb', scale: 0.9 },
 });
 
 // ---------------------------------------------------------------------------
@@ -138,6 +140,11 @@ async function loadWorld(): Promise<void> {
     console.log(
       `Roads: ${result.total} segments (${result.ground} ground, ${result.bridges} bridges).`
     );
+    // With photorealistic imagery the real roads already show, so hide the
+    // opaque overlay by default; press M to toggle it back on. Bridges (which
+    // imagery can't represent as elevated geometry) always stay visible.
+    roadOverlay = result.groundPrimitive;
+    if (roadOverlay) roadOverlay.show = !hasIon;
     roadStatus = `${result.total.toLocaleString()} roads`;
   } catch (err) {
     console.warn('Road network failed to load (Overpass).', err);
@@ -160,6 +167,7 @@ window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   keys.add(k);
   if (k === 'r') vehicle.reset();
+  if (k === 'm' && roadOverlay) roadOverlay.show = !roadOverlay.show;
   if (k === 'c') {
     chaseCam = !chaseCam;
     if (!chaseCam) viewer.camera.lookAtTransform(Matrix4.IDENTITY);
