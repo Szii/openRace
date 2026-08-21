@@ -60,7 +60,12 @@ const DRIVABLE = new Set([
  * Fetch drivable roads within `radius` metres of (lat, lon). Result is cached in
  * localStorage so repeated loads of the same area don't re-hit Overpass.
  */
-export async function fetchRoads(lat: number, lon: number, radius: number): Promise<RoadSegment[]> {
+export async function fetchRoads(
+  lat: number,
+  lon: number,
+  radius: number,
+  bundledUrl?: string
+): Promise<RoadSegment[]> {
   const cacheKey = `osm-roads:${lat.toFixed(4)}:${lon.toFixed(4)}:${radius}`;
   const cached = localStorage.getItem(cacheKey);
   if (cached) {
@@ -68,6 +73,25 @@ export async function fetchRoads(lat: number, lon: number, radius: number): Prom
       return JSON.parse(cached) as RoadSegment[];
     } catch {
       /* fall through and refetch */
+    }
+  }
+
+  // Prefer a pre-bundled data file (shipped with the app) so the start area
+  // never depends on the flaky live Overpass API.
+  if (bundledUrl) {
+    try {
+      const res = await fetch(bundledUrl);
+      if (res.ok) {
+        const roads = (await res.json()) as RoadSegment[];
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify(roads));
+        } catch {
+          /* quota — fine */
+        }
+        return roads;
+      }
+    } catch (err) {
+      console.warn('Bundled roads unavailable, falling back to Overpass.', err);
     }
   }
 

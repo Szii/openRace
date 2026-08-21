@@ -18,6 +18,7 @@ import { fetchRoads, fetchBuildings } from './osm';
 import { buildRoads } from './roads';
 import { buildBuildings } from './buildings';
 import { buildTunnels } from './tunnels';
+import { buildSurfaceIndex, type SurfaceIndex } from './surface';
 import { Vehicle } from './vehicle';
 
 // ---------------------------------------------------------------------------
@@ -58,10 +59,10 @@ viewer.scene.screenSpaceCameraController.enableInputs = false;
 // ---------------------------------------------------------------------------
 // Car state
 // ---------------------------------------------------------------------------
-// Start at the Golden Gate Bridge / Presidio, San Francisco: low building
-// density, the Golden Gate Bridge + Presidio Parkway viaducts, and the
-// MacArthur / Presidio Parkway tunnels all nearby to show off bridges & tunnels.
-const START = { lon: -122.475, lat: 37.8065, headingDeg: 0 };
+// Start in the Presidio, San Francisco (on land), near the Presidio Parkway
+// viaducts and the MacArthur / Presidio Parkway tunnels, with the Golden Gate
+// Bridge to the west. Low building density. Matches public/data/start-roads.json.
+const START = { lon: -122.4665, lat: 37.7995, headingDeg: 290 };
 
 const vehicle = new Vehicle(
   CesiumMath.toRadians(START.lon),
@@ -78,6 +79,10 @@ let roadOverlay: { show: boolean } | undefined;
 // Carved tunnel bits; toggled with the T key.
 let tunnelClip: { enabled: boolean } | undefined;
 let tunnelPrimitive: { show: boolean } | undefined;
+let tunnelsEnabled = false;
+// Drivable-surface index: lets the car ramp onto bridge decks / into tunnels.
+let surfaceIndex: SurfaceIndex | undefined;
+let carHeight = NaN; // smoothed height the car sits at
 
 // Align the glTF's nose with the travel direction (tweak by ±90/180 if needed).
 const MODEL_HEADING_OFFSET = CesiumMath.toRadians(-90);
@@ -194,7 +199,7 @@ async function loadWorld(): Promise<void> {
   loadingEl.textContent = 'Loading streets…';
   let roadStatus = '';
   try {
-    const roads = await fetchRoads(START.lat, START.lon, 1200);
+    const roads = await fetchRoads(START.lat, START.lon, 1500, '/data/start-roads.json');
     const result = await buildRoads(viewer.scene, viewer.terrainProvider, roads);
     console.log(
       `Roads: ${result.total} segments (${result.ground} ground, ${result.bridges} bridges).`
@@ -214,6 +219,13 @@ async function loadWorld(): Promise<void> {
       if (t.count) roadStatus += ` · ${t.count} tunnels`;
     } catch (err) {
       console.warn('Tunnel carving failed.', err);
+    }
+
+    // Build the drivable-surface index (bridge decks + tunnel floors).
+    try {
+      surfaceIndex = await buildSurfaceIndex(viewer.terrainProvider, roads);
+    } catch (err) {
+      console.warn('Surface index failed.', err);
     }
   } catch (err) {
     console.warn('Road network failed to load (Overpass).', err);
@@ -249,8 +261,9 @@ window.addEventListener('keydown', (e) => {
   if (k === 'r') vehicle.reset();
   if (k === 'm' && roadOverlay) roadOverlay.show = !roadOverlay.show;
   if (k === 't') {
-    if (tunnelClip) tunnelClip.enabled = !tunnelClip.enabled;
-    if (tunnelPrimitive) tunnelPrimitive.show = !tunnelPrimitive.show;
+    tunnelsEnabled = !tunnelsEnabled;
+    if (tunnelClip) tunnelClip.enabled = tunnelsEnabled;
+    if (tunnelPrimitive) tunnelPrimitive.show = tunnelsEnabled;
   }
   if (k === 'c') cycleCameraView();
   if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
@@ -331,10 +344,15 @@ viewer.scene.preRender.addEventListener(() => {
   vehicle.lon = carto.longitude;
   vehicle.lat = carto.latitude;
 
-  // Clamp to the terrain surface.
+  // Choose the surface the car sits on: a bridge deck / tunnel floor if we're on
+  // one, otherwise the terrain. Smoothed so the car ramps up/down onto it.
   const ground = viewer.scene.globe.getHeight(carto);
   if (ground !== undefined) lastGround = ground;
-  Cartesian3.fromRadians(vehicle.lon, vehicle.lat, lastGround + CAR_GROUND_OFFSET, undefined, carPos);
+  let targetHeight = lastGround;
+  const surf = surfaceIndex?.query(vehicle.lon, vehicle.lat);
+  if (surf && (surf.kind === 'bridge' || tunnelsEnabled)) targetHeight = surf.height;
+  carHeight = isNaN(carHeight) ? targetHeight : carHeight + (targetHeight - carHeight) * 0.18;
+  Cartesian3.fromRadians(vehicle.lon, vehicle.lat, carHeight + CAR_GROUND_OFFSET, undefined, carPos);
 
   // Pitch/roll the car to match the ground slope (nose up on hills, tilt in turns
   // that cross a camber). Sampled with small finite differences, then smoothed.
