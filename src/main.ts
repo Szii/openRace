@@ -483,15 +483,31 @@ setInterval(() => {
   }
 }, 60);
 
-// Sample the 3D-mesh height under the car, OUTSIDE the render loop (sampleHeight
-// runs an offscreen pass — doing it in preRender would corrupt rendering). The
-// game loop reads the stored value and smooths toward it.
+// Find the road height under the car, OUTSIDE the render loop (picking runs an
+// offscreen pass; doing it in preRender corrupts rendering). We cast a ray DOWN
+// from just above the car and take the first surface below it — so trees and
+// overpasses *above* the car are ignored (they'd otherwise shove the car up).
+const RAY_START_ABOVE = 2.5; // metres above the car the down-ray starts
 setInterval(() => {
   const s = viewer.scene as any;
-  if (!use3DTiles || !s.sampleHeightSupported || !s.sampleHeight) return;
+  if (!use3DTiles || !s.pickFromRay) return;
   try {
-    const h = s.sampleHeight(Cartographic.fromRadians(vehicle.lon, vehicle.lat), [carEntity]);
-    if (typeof h === 'number' && isFinite(h)) sampled3DHeight = h;
+    const base = isNaN(carHeight) ? (isNaN(sampled3DHeight) ? 0 : sampled3DHeight) : carHeight;
+    const start = Cartesian3.fromRadians(vehicle.lon, vehicle.lat, base + RAY_START_ABOVE);
+    const up = Cartesian3.normalize(
+      Matrix4.multiplyByPointAsVector(
+        Transforms.eastNorthUpToFixedFrame(start),
+        new Cartesian3(0, 0, 1),
+        new Cartesian3()
+      ),
+      new Cartesian3()
+    );
+    const down = Cartesian3.negate(up, new Cartesian3());
+    const hit = s.pickFromRay(new Ray(start, down), [carEntity]);
+    if (hit?.position) {
+      const h = Cartographic.fromCartesian(hit.position).height;
+      if (isFinite(h)) sampled3DHeight = h;
+    }
   } catch {
     /* tiles not ready under the car yet */
   }
