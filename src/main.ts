@@ -5,6 +5,7 @@ import {
   Cartographic,
   Math as CesiumMath,
   Terrain,
+  Cesium3DTileset,
   createOsmBuildingsAsync,
   createGooglePhotorealistic3DTileset,
   HeadingPitchRoll,
@@ -84,6 +85,12 @@ let tunnelsEnabled = false;
 let surfaceIndex: SurfaceIndex | undefined;
 let carHeight = NaN; // smoothed height the car sits at
 
+// Real 3D world (Google Photorealistic 3D Tiles). When active, the car drives
+// on the actual mesh surface instead of terrain + synthetic roads.
+const GOOGLE_P3DT_ASSET = 2275207; // Google Photorealistic 3D Tiles on Cesium ion
+let use3DTiles = false;
+let sampled3DHeight = NaN; // height of the 3D mesh under the car (sampled off-render)
+
 // Align the glTF's nose with the travel direction (tweak by ±90/180 if needed).
 const MODEL_HEADING_OFFSET = CesiumMath.toRadians(-90);
 const CAR_GROUND_OFFSET = 0.2; // metres above sampled ground
@@ -155,10 +162,65 @@ const carEntity = viewer.entities.add({
   model: { uri: '/models/car.glb', scale: 0.55 },
 });
 
+// Settle the car onto the 3D-tiles mesh before the scene is revealed.
+async function clampCarToTiles(): Promise<void> {
+  const s = viewer.scene as any;
+  if (!s.sampleHeightMostDetailed) return;
+  try {
+    const carto = Cartographic.fromRadians(vehicle.lon, vehicle.lat);
+    const [res] = await s.sampleHeightMostDetailed([carto], [carEntity]);
+    if (res && isFinite(res.height)) {
+      sampled3DHeight = res.height;
+      carHeight = res.height;
+    }
+  } catch {
+    /* tiles not ready — the per-frame sampler will catch up */
+  }
+}
+
+function finishLoading(): void {
+  loadingEl.classList.add('hidden');
+  setTimeout(() => loadingEl.remove(), 700);
+}
+
 // ---------------------------------------------------------------------------
-// World: imagery / buildings / roads
+// World
 // ---------------------------------------------------------------------------
 async function loadWorld(): Promise<void> {
+  // Preferred: Google Photorealistic 3D Tiles — a real 3D mesh of the world
+  // (roads, bridges, terrain) that the car drives on the actual surface of.
+  const load3DTiles = async (tileset: Cesium3DTileset, label: string) => {
+    viewer.scene.primitives.add(tileset);
+    viewer.scene.globe.show = false; // the tiles bring their own terrain
+    use3DTiles = true;
+    statusEl.textContent = label;
+    loadingEl.textContent = 'Placing you on the map…';
+    await clampCarToTiles();
+    finishLoading();
+  };
+
+  if (hasIon) {
+    loadingEl.textContent = 'Loading 3D world…';
+    try {
+      await load3DTiles(await Cesium3DTileset.fromIonAssetId(GOOGLE_P3DT_ASSET), 'Google Photorealistic 3D');
+      return;
+    } catch (err) {
+      console.warn('Google Photorealistic 3D Tiles unavailable, using fallback.', err);
+      use3DTiles = false;
+      viewer.scene.globe.show = true;
+    }
+  } else if (googleKey) {
+    try {
+      await load3DTiles(await (createGooglePhotorealistic3DTileset as any)({ key: googleKey }), 'Google 3D');
+      return;
+    } catch (err) {
+      console.warn('Google 3D Tiles (key) failed, using fallback.', err);
+      use3DTiles = false;
+      viewer.scene.globe.show = true;
+    }
+  }
+
+  // Fallback: OSM imagery + our synthetic 3D roads/bridges/tunnels.
   if (!hasIon) {
     viewer.imageryLayers.addImageryProvider(
       new OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
@@ -166,16 +228,7 @@ async function loadWorld(): Promise<void> {
   }
 
   let buildingStatus = '';
-  if (googleKey) {
-    try {
-      const google = await (createGooglePhotorealistic3DTileset as any)({ key: googleKey });
-      viewer.scene.primitives.add(google);
-      viewer.scene.globe.show = false;
-      buildingStatus = 'Google 3D';
-    } catch (err) {
-      console.warn('Google 3D Tiles failed to load, continuing without them.', err);
-    }
-  } else if (hasIon) {
+  if (hasIon) {
     try {
       viewer.scene.primitives.add(await createOsmBuildingsAsync());
       buildingStatus = 'ion buildings';
@@ -183,35 +236,24 @@ async function loadWorld(): Promise<void> {
       console.warn('OSM Buildings failed to load.', err);
     }
   } else {
-    // No keys: extrude a 3D city ourselves from OSM building footprints.
     loadingEl.textContent = 'Loading buildings…';
     try {
       const buildings = await fetchBuildings(START.lat, START.lon, 700);
-      const n = buildBuildings(viewer.scene, buildings);
-      buildingStatus = `${n.toLocaleString()} buildings`;
+      buildingStatus = `${buildBuildings(viewer.scene, buildings).toLocaleString()} buildings`;
     } catch (err) {
       console.warn('Buildings failed to load (Overpass).', err);
       buildingStatus = 'buildings failed';
     }
   }
 
-  // Real OSM road network as 3D geometry (draped roads + floating bridges).
   loadingEl.textContent = 'Loading streets…';
   let roadStatus = '';
   try {
     const roads = await fetchRoads(START.lat, START.lon, 1500, '/data/start-roads.json');
     const result = await buildRoads(viewer.scene, viewer.terrainProvider, roads);
-    console.log(
-      `Roads: ${result.total} segments (${result.ground} ground, ${result.bridges} bridges).`
-    );
-    // With photorealistic imagery the real roads already show, so hide the
-    // opaque overlay by default; press M to toggle it back on. Bridges (which
-    // imagery can't represent as elevated geometry) always stay visible.
     roadOverlay = result.groundPrimitive;
     if (roadOverlay) roadOverlay.show = !hasIon;
     roadStatus = `${result.total.toLocaleString()} roads`;
-
-    // Carve the tunnels out of the terrain and render their interiors.
     try {
       const t = await buildTunnels(viewer.scene, viewer.terrainProvider, roads);
       tunnelClip = t.collection;
@@ -220,8 +262,6 @@ async function loadWorld(): Promise<void> {
     } catch (err) {
       console.warn('Tunnel carving failed.', err);
     }
-
-    // Build the drivable-surface index (bridge decks + tunnel floors).
     try {
       surfaceIndex = await buildSurfaceIndex(viewer.terrainProvider, roads);
     } catch (err) {
@@ -233,9 +273,7 @@ async function loadWorld(): Promise<void> {
   }
 
   statusEl.textContent = [buildingStatus, roadStatus].filter(Boolean).join(' · ');
-
-  loadingEl.classList.add('hidden');
-  setTimeout(() => loadingEl.remove(), 700);
+  finishLoading();
 }
 
 // ---------------------------------------------------------------------------
@@ -344,14 +382,21 @@ viewer.scene.preRender.addEventListener(() => {
   vehicle.lon = carto.longitude;
   vehicle.lat = carto.latitude;
 
-  // Choose the surface the car sits on: a bridge deck / tunnel floor if we're on
-  // one, otherwise the terrain. Smoothed so the car ramps up/down onto it.
-  const ground = viewer.scene.globe.getHeight(carto);
-  if (ground !== undefined) lastGround = ground;
-  let targetHeight = lastGround;
-  const surf = surfaceIndex?.query(vehicle.lon, vehicle.lat);
-  if (surf && (surf.kind === 'bridge' || tunnelsEnabled)) targetHeight = surf.height;
-  carHeight = isNaN(carHeight) ? targetHeight : carHeight + (targetHeight - carHeight) * 0.18;
+  // Choose the height the car sits at.
+  let targetHeight: number;
+  if (use3DTiles) {
+    // Drive on the real 3D mesh surface (sampled off the render loop).
+    targetHeight = isNaN(sampled3DHeight) ? (isNaN(carHeight) ? 0 : carHeight) : sampled3DHeight;
+  } else {
+    // Terrain, plus a bridge deck / tunnel floor if we're on one.
+    const ground = viewer.scene.globe.getHeight(carto);
+    if (ground !== undefined) lastGround = ground;
+    targetHeight = lastGround;
+    const surf = surfaceIndex?.query(vehicle.lon, vehicle.lat);
+    if (surf && (surf.kind === 'bridge' || tunnelsEnabled)) targetHeight = surf.height;
+  }
+  const k = use3DTiles ? 0.3 : 0.18; // smoothing (ramps onto surfaces)
+  carHeight = isNaN(carHeight) ? targetHeight : carHeight + (targetHeight - carHeight) * k;
   Cartesian3.fromRadians(vehicle.lon, vehicle.lat, carHeight + CAR_GROUND_OFFSET, undefined, carPos);
 
   // Pitch/roll the car to match the ground slope (nose up on hills, tilt in turns
@@ -437,5 +482,19 @@ setInterval(() => {
     camDistRatio = 1;
   }
 }, 60);
+
+// Sample the 3D-mesh height under the car, OUTSIDE the render loop (sampleHeight
+// runs an offscreen pass — doing it in preRender would corrupt rendering). The
+// game loop reads the stored value and smooths toward it.
+setInterval(() => {
+  const s = viewer.scene as any;
+  if (!use3DTiles || !s.sampleHeightSupported || !s.sampleHeight) return;
+  try {
+    const h = s.sampleHeight(Cartographic.fromRadians(vehicle.lon, vehicle.lat), [carEntity]);
+    if (typeof h === 'number' && isFinite(h)) sampled3DHeight = h;
+  } catch {
+    /* tiles not ready under the car yet */
+  }
+}, 40);
 
 loadWorld();
