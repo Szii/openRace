@@ -60,10 +60,9 @@ viewer.scene.screenSpaceCameraController.enableInputs = false;
 // ---------------------------------------------------------------------------
 // Car state
 // ---------------------------------------------------------------------------
-// Start in the Presidio, San Francisco (on land), near the Presidio Parkway
-// viaducts and the MacArthur / Presidio Parkway tunnels, with the Golden Gate
-// Bridge to the west. Low building density. Matches public/data/start-roads.json.
-const START = { lon: -122.4665, lat: 37.7995, headingDeg: 290 };
+// Start in Srubec, near České Budějovice (Czech Budweis), Czech Republic.
+// Uses Google Photorealistic 3D Tiles (coverage permitting).
+const START = { lon: 14.5389, lat: 48.9689, headingDeg: 0 };
 
 const vehicle = new Vehicle(
   CesiumMath.toRadians(START.lon),
@@ -162,20 +161,27 @@ const carEntity = viewer.entities.add({
   model: { uri: '/models/car.glb', scale: 0.55 },
 });
 
-// Settle the car onto the 3D-tiles mesh before the scene is revealed.
-async function clampCarToTiles(): Promise<void> {
+// Settle the car onto the 3D-tiles mesh before the scene is revealed. Retries
+// because the tiles under the car may still be streaming in. Returns true once
+// a real surface height is found.
+async function clampCarToTiles(): Promise<boolean> {
   const s = viewer.scene as any;
-  if (!s.sampleHeightMostDetailed) return;
-  try {
-    const carto = Cartographic.fromRadians(vehicle.lon, vehicle.lat);
-    const [res] = await s.sampleHeightMostDetailed([carto], [carEntity]);
-    if (res && isFinite(res.height)) {
-      sampled3DHeight = res.height;
-      carHeight = res.height;
+  if (!s.sampleHeightMostDetailed) return false;
+  for (let attempt = 0; attempt < 15; attempt++) {
+    try {
+      const carto = new Cartographic(vehicle.lon, vehicle.lat, -9999);
+      const [res] = await s.sampleHeightMostDetailed([carto], [carEntity]);
+      if (res && isFinite(res.height) && res.height > -9000) {
+        sampled3DHeight = res.height;
+        carHeight = res.height;
+        return true;
+      }
+    } catch {
+      /* keep retrying */
     }
-  } catch {
-    /* tiles not ready — the per-frame sampler will catch up */
+    await new Promise((r) => setTimeout(r, 300));
   }
+  return false;
 }
 
 function finishLoading(): void {
@@ -193,9 +199,11 @@ async function loadWorld(): Promise<void> {
     viewer.scene.primitives.add(tileset);
     viewer.scene.globe.show = false; // the tiles bring their own terrain
     use3DTiles = true;
-    statusEl.textContent = label;
     loadingEl.textContent = 'Placing you on the map…';
-    await clampCarToTiles();
+    const placed = await clampCarToTiles();
+    statusEl.textContent = placed
+      ? label
+      : `${label} — no 3D coverage here (try a major city)`;
     finishLoading();
   };
 
@@ -249,7 +257,7 @@ async function loadWorld(): Promise<void> {
   loadingEl.textContent = 'Loading streets…';
   let roadStatus = '';
   try {
-    const roads = await fetchRoads(START.lat, START.lon, 1500, '/data/start-roads.json');
+    const roads = await fetchRoads(START.lat, START.lon, 1500);
     const result = await buildRoads(viewer.scene, viewer.terrainProvider, roads);
     roadOverlay = result.groundPrimitive;
     if (roadOverlay) roadOverlay.show = !hasIon;
@@ -430,11 +438,18 @@ viewer.scene.preRender.addEventListener(() => {
     else camPosSmooth = Cartesian3.lerp(camPosSmooth, camPos, 0.35, new Cartesian3());
     camPos = camPosSmooth;
 
-    // Keep the camera from dipping below the ground on slopes (cheap, no pick).
+    // Keep the camera from dipping below the ground (cheap, no pick). Uses the
+    // terrain height, or the car's sampled mesh height in 3D-tiles mode.
     const camCarto = Cartographic.fromCartesian(camPos);
     const camGround = viewer.scene.globe.getHeight(camCarto);
-    if (camGround !== undefined && camCarto.height < camGround + 2) {
-      Cartesian3.fromRadians(camCarto.longitude, camCarto.latitude, camGround + 2, undefined, camPos);
+    const floor =
+      camGround !== undefined
+        ? camGround + 2
+        : use3DTiles && !isNaN(sampled3DHeight)
+          ? sampled3DHeight + 2
+          : undefined;
+    if (floor !== undefined && camCarto.height < floor) {
+      Cartesian3.fromRadians(camCarto.longitude, camCarto.latitude, floor, undefined, camPos);
     }
 
     const target = Cartesian3.add(
@@ -484,30 +499,44 @@ setInterval(() => {
 }, 60);
 
 // Find the road height under the car, OUTSIDE the render loop (picking runs an
-// offscreen pass; doing it in preRender corrupts rendering). We cast a ray DOWN
-// from just above the car and take the first surface below it — so trees and
-// overpasses *above* the car are ignored (they'd otherwise shove the car up).
-const RAY_START_ABOVE = 2.5; // metres above the car the down-ray starts
+// offscreen pass; doing it in preRender corrupts rendering). Cast a ray DOWN
+// from a given altitude and return the first surface below it.
+const RAY_START_ABOVE = 2.5; // metres above the car the local down-ray starts
+function castDown(startHeight: number): number | null {
+  const s = viewer.scene as any;
+  const start = Cartesian3.fromRadians(vehicle.lon, vehicle.lat, startHeight);
+  const up = Cartesian3.normalize(
+    Matrix4.multiplyByPointAsVector(
+      Transforms.eastNorthUpToFixedFrame(start),
+      new Cartesian3(0, 0, 1),
+      new Cartesian3()
+    ),
+    new Cartesian3()
+  );
+  const down = Cartesian3.negate(up, new Cartesian3());
+  const hit = s.pickFromRay(new Ray(start, down), [carEntity]);
+  if (hit?.position) {
+    const h = Cartographic.fromCartesian(hit.position).height;
+    if (isFinite(h)) return h;
+  }
+  return null;
+}
+
 setInterval(() => {
   const s = viewer.scene as any;
   if (!use3DTiles || !s.pickFromRay) return;
   try {
-    const base = isNaN(carHeight) ? (isNaN(sampled3DHeight) ? 0 : sampled3DHeight) : carHeight;
-    const start = Cartesian3.fromRadians(vehicle.lon, vehicle.lat, base + RAY_START_ABOVE);
-    const up = Cartesian3.normalize(
-      Matrix4.multiplyByPointAsVector(
-        Transforms.eastNorthUpToFixedFrame(start),
-        new Cartesian3(0, 0, 1),
-        new Cartesian3()
-      ),
-      new Cartesian3()
-    );
-    const down = Cartesian3.negate(up, new Cartesian3());
-    const hit = s.pickFromRay(new Ray(start, down), [carEntity]);
-    if (hit?.position) {
-      const h = Cartographic.fromCartesian(hit.position).height;
-      if (isFinite(h)) sampled3DHeight = h;
+    // Local ray just above the car — first surface below it, so overhead trees
+    // and stacked roads are ignored.
+    const local = isNaN(carHeight) ? null : castDown(carHeight + RAY_START_ABOVE);
+    if (local !== null) {
+      sampled3DHeight = local;
+    } else if (isNaN(sampled3DHeight)) {
+      // Never found ground (e.g. spawned in the void) → search from high up.
+      const recovered = castDown(9000);
+      if (recovered !== null) sampled3DHeight = recovered;
     }
+    // A transient local miss once established keeps the last good height.
   } catch {
     /* tiles not ready under the car yet */
   }
