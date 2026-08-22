@@ -5,6 +5,8 @@ import {
   Cartographic,
   Math as CesiumMath,
   Terrain,
+  Color,
+  EllipsoidTerrainProvider,
   Cesium3DTileset,
   createOsmBuildingsAsync,
   createGooglePhotorealistic3DTileset,
@@ -123,6 +125,7 @@ let prevCarHeight = NaN; // last frame's height (for slope-from-motion pitch)
 // on the actual mesh surface instead of terrain + synthetic roads.
 const GOOGLE_P3DT_ASSET = 2275207; // Google Photorealistic 3D Tiles on Cesium ion
 let use3DTiles = false;
+let p3dtTileset: Cesium3DTileset | undefined;
 let sampled3DHeight = NaN; // height of the 3D mesh under the car (sampled off-render)
 
 // Coverage tracking: block the car at the edge of the mapped 3D area.
@@ -291,12 +294,34 @@ function flyMapTo(lonRad: number, latRad: number): void {
   });
 }
 
+// Show/hide a red "no coverage" backdrop under the 3D mesh. It's a plain red
+// ellipsoid at sea level, so the Google mesh (at real elevation) occludes it
+// where coverage exists — leaving red only where there's no 3D data.
+const flatTerrain = new EllipsoidTerrainProvider();
+function setCoverageBackdrop(on: boolean): void {
+  if (!use3DTiles) return; // only meaningful in Google 3D mode
+  if (on) {
+    viewer.scene.terrainProvider = flatTerrain;
+    viewer.scene.globe.baseColor = Color.fromCssColorString('#c0231f');
+    for (let i = 0; i < viewer.imageryLayers.length; i++) {
+      viewer.imageryLayers.get(i).show = false;
+    }
+    viewer.scene.globe.show = true;
+  } else {
+    viewer.scene.globe.show = false;
+    for (let i = 0; i < viewer.imageryLayers.length; i++) {
+      viewer.imageryLayers.get(i).show = true;
+    }
+  }
+}
+
 function enterMapMode(): void {
   mapMode = true;
   mapBtn.textContent = '✕ Close';
   mapHintEl.textContent = MAP_HINT_DEFAULT;
   mapHintEl.classList.add('show');
   viewer.scene.screenSpaceCameraController.enableInputs = true; // let the user pan/zoom
+  setCoverageBackdrop(true);
   flyMapTo(vehicle.lon, vehicle.lat);
 }
 
@@ -305,6 +330,7 @@ function exitMapMode(): void {
   mapBtn.textContent = '🗺 Map';
   mapHintEl.classList.remove('show');
   viewer.scene.screenSpaceCameraController.enableInputs = isFreeCam();
+  setCoverageBackdrop(false);
   camPosSmooth = undefined;
 }
 
@@ -316,10 +342,18 @@ pickHandler.setInputAction((e: any) => {
   if (!mapMode) return;
   const pos = viewer.scene.pickPosition(e.position);
   if (!pos) {
-    flashMapHint('No 3D coverage there — click a spot that shows imagery.');
+    flashMapHint('No 3D coverage there — click a mapped (non-red) area.');
     return;
   }
   const carto = Cartographic.fromCartesian(pos);
+  // The red backdrop is a sea-level ellipsoid; the mesh is real elevation. A
+  // picked 3D-tile feature or a clearly non-sea-level height means real coverage.
+  const picked = viewer.scene.pick(e.position);
+  const onMesh = !!picked || Math.abs(carto.height) > 8;
+  if (!onMesh) {
+    flashMapHint('That area has no Google 3D — click a mapped (non-red) area.');
+    return;
+  }
   exitMapMode();
   void teleportToCoords(carto.longitude, carto.latitude, vehicle.heading, 'selected spot');
 }, ScreenSpaceEventType.LEFT_CLICK);
@@ -332,10 +366,11 @@ async function loadWorld(): Promise<void> {
   // tileset is global; we keep it loaded and teleport the car between covered
   // cities. Only fall back to terrain if the tileset itself can't be loaded.
   const startTiles = async (tileset: Cesium3DTileset, label: string): Promise<boolean> => {
-    tileset.maximumScreenSpaceError = 16; // default sharpness
+    tileset.maximumScreenSpaceError = 20; // a bit coarser → smoother framerate
     // Keep a big tile cache so driving around re-streams far less.
     (tileset as any).cacheBytes = 1_500_000_000;
     (tileset as any).maximumCacheOverflowBytes = 1_000_000_000;
+    p3dtTileset = tileset;
     viewer.scene.primitives.add(tileset);
     viewer.scene.globe.show = false; // the tiles bring their own terrain
     use3DTiles = true;
@@ -600,7 +635,7 @@ viewer.scene.preRender.addEventListener(() => {
     const surf = surfaceIndex?.query(vehicle.lon, vehicle.lat);
     if (surf && (surf.kind === 'bridge' || tunnelsEnabled)) targetHeight = surf.height;
   }
-  const k = use3DTiles ? 0.3 : 0.18; // smoothing (ramps onto surfaces)
+  const k = use3DTiles ? 0.4 : 0.18; // smoothing (ramps onto surfaces)
   carHeight = isNaN(carHeight) ? targetHeight : carHeight + (targetHeight - carHeight) * k;
   Cartesian3.fromRadians(vehicle.lon, vehicle.lat, carHeight + CAR_GROUND_OFFSET, undefined, carPos);
 
@@ -646,19 +681,19 @@ viewer.scene.preRender.addEventListener(() => {
 
     // Smooth the position for a bit of racing-style lag.
     if (!camPosSmooth) camPosSmooth = Cartesian3.clone(camPos, new Cartesian3());
-    else camPosSmooth = Cartesian3.lerp(camPosSmooth, camPos, 0.35, new Cartesian3());
+    else camPosSmooth = Cartesian3.lerp(camPosSmooth, camPos, 0.5, new Cartesian3());
     camPos = camPosSmooth;
 
-    // Keep the camera from dipping below the ground (cheap, no pick). Uses the
-    // terrain height, or the car's sampled mesh height in 3D-tiles mode.
+    // Keep the camera from dipping below the ground (cheap, no pick). In 3D-tiles
+    // mode use the car's sampled mesh height; otherwise the terrain height.
     const camCarto = Cartographic.fromCartesian(camPos);
-    const camGround = viewer.scene.globe.getHeight(camCarto);
-    const floor =
-      camGround !== undefined
-        ? camGround + 2
-        : use3DTiles && !isNaN(sampled3DHeight)
-          ? sampled3DHeight + 2
-          : undefined;
+    let floor: number | undefined;
+    if (use3DTiles) {
+      floor = isNaN(sampled3DHeight) ? undefined : sampled3DHeight + 2;
+    } else {
+      const camGround = viewer.scene.globe.getHeight(camCarto);
+      floor = camGround !== undefined ? camGround + 2 : undefined;
+    }
     if (floor !== undefined && camCarto.height < floor) {
       Cartesian3.fromRadians(camCarto.longitude, camCarto.latitude, floor, undefined, camPos);
     }
@@ -707,7 +742,7 @@ setInterval(() => {
   } catch {
     camDistRatio = 1;
   }
-}, 60);
+}, 120);
 
 // Find the road height under the car, OUTSIDE the render loop (picking runs an
 // offscreen pass; doing it in preRender corrupts rendering). Cast a ray DOWN
@@ -766,6 +801,6 @@ setInterval(() => {
   } catch {
     /* tiles not ready under the car yet */
   }
-}, 40);
+}, 55);
 
 loadWorld();
