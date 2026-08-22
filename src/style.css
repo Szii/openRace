@@ -44,11 +44,17 @@ body {
   color: #ffd54a;
 }
 
-#citySelect {
+#topbar {
   position: fixed;
   top: 14px;
   left: 16px;
   z-index: 6;
+  display: flex;
+  gap: 8px;
+}
+
+#citySelect,
+#mapBtn {
   font-size: 14px;
   font-weight: 600;
   padding: 7px 10px;
@@ -57,6 +63,26 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 7px;
   cursor: pointer;
+}
+
+#mapHint {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: none;
+  padding: 8px 16px;
+  color: #fff;
+  font-size: 14px;
+  background: rgba(10, 16, 32, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 7px;
+  text-shadow: 0 1px 3px #000;
+}
+
+#mapHint.show {
+  display: block;
 }
 
 #boundsMsg {

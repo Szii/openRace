@@ -14,6 +14,8 @@ import {
   Ray,
   CallbackProperty,
   OpenStreetMapImageryProvider,
+  ScreenSpaceEventHandler,
+  ScreenSpaceEventType,
 } from 'cesium';
 import { fetchRoads, fetchBuildings } from './osm';
 import { buildRoads } from './roads';
@@ -230,11 +232,16 @@ function finishLoading(): void {
   loadingEl.classList.add('hidden'); // kept in the DOM so teleports can reuse it
 }
 
-// Teleport the car to a city (the 3D tileset is global, so no reload needed).
-async function teleportTo(city: City): Promise<void> {
-  vehicle.lon = CesiumMath.toRadians(city.lon);
-  vehicle.lat = CesiumMath.toRadians(city.lat);
-  vehicle.heading = CesiumMath.toRadians(city.heading);
+// Teleport the car to given coordinates (the 3D tileset is global, no reload).
+async function teleportToCoords(
+  lonRad: number,
+  latRad: number,
+  headingRad: number,
+  label: string
+): Promise<void> {
+  vehicle.lon = lonRad;
+  vehicle.lat = latRad;
+  vehicle.heading = headingRad;
   vehicle.speed = 0;
   vehicle.steer = 0;
   carHeight = NaN;
@@ -244,13 +251,78 @@ async function teleportTo(city: City): Promise<void> {
   setOutOfBounds(false);
   camPosSmooth = undefined;
   if (use3DTiles) {
-    loadingEl.textContent = `Loading ${city.name}…`;
+    loadingEl.textContent = `Loading ${label}…`;
     loadingEl.classList.remove('hidden');
     const ok = await clampCarToTiles();
     loadingEl.classList.add('hidden');
     if (!ok) setOutOfBounds(true); // no 3D mesh here — show the message
   }
 }
+
+async function teleportTo(city: City): Promise<void> {
+  await teleportToCoords(
+    CesiumMath.toRadians(city.lon),
+    CesiumMath.toRadians(city.lat),
+    CesiumMath.toRadians(city.heading),
+    city.name
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Map mode: fly up to a top-down view and click the mesh to pick a spawn point.
+// ---------------------------------------------------------------------------
+let mapMode = false;
+const mapBtn = document.getElementById('mapBtn')!;
+const mapHintEl = document.getElementById('mapHint')!;
+const MAP_HINT_DEFAULT = mapHintEl.textContent || '';
+let hintTimer = 0;
+
+function flashMapHint(msg: string): void {
+  mapHintEl.textContent = msg;
+  clearTimeout(hintTimer);
+  hintTimer = window.setTimeout(() => (mapHintEl.textContent = MAP_HINT_DEFAULT), 2600);
+}
+
+function flyMapTo(lonRad: number, latRad: number): void {
+  viewer.camera.flyTo({
+    destination: Cartesian3.fromRadians(lonRad, latRad, 2200),
+    orientation: { heading: 0, pitch: CesiumMath.toRadians(-72), roll: 0 },
+    duration: 1.4,
+  });
+}
+
+function enterMapMode(): void {
+  mapMode = true;
+  mapBtn.textContent = '✕ Close';
+  mapHintEl.textContent = MAP_HINT_DEFAULT;
+  mapHintEl.classList.add('show');
+  viewer.scene.screenSpaceCameraController.enableInputs = true; // let the user pan/zoom
+  flyMapTo(vehicle.lon, vehicle.lat);
+}
+
+function exitMapMode(): void {
+  mapMode = false;
+  mapBtn.textContent = '🗺 Map';
+  mapHintEl.classList.remove('show');
+  viewer.scene.screenSpaceCameraController.enableInputs = isFreeCam();
+  camPosSmooth = undefined;
+}
+
+mapBtn.addEventListener('click', () => (mapMode ? exitMapMode() : enterMapMode()));
+
+// Click the map to spawn there (only where the 3D mesh exists).
+const pickHandler = new ScreenSpaceEventHandler(viewer.canvas);
+pickHandler.setInputAction((e: any) => {
+  if (!mapMode) return;
+  const pos = viewer.scene.pickPosition(e.position);
+  if (!pos) {
+    flashMapHint('No 3D coverage there — click a spot that shows imagery.');
+    return;
+  }
+  const carto = Cartographic.fromCartesian(pos);
+  exitMapMode();
+  void teleportToCoords(carto.longitude, carto.latitude, vehicle.heading, 'selected spot');
+}, ScreenSpaceEventType.LEFT_CLICK);
 
 // ---------------------------------------------------------------------------
 // World
@@ -405,13 +477,20 @@ CITIES.forEach((c, i) => {
 citySelect.value = String(currentCityIndex);
 citySelect.addEventListener('change', () => {
   currentCityIndex = parseInt(citySelect.value, 10);
-  void teleportTo(CITIES[currentCityIndex]);
+  const c = CITIES[currentCityIndex];
+  if (mapMode) {
+    // In map mode, fly the overview to the city so you can click a spot.
+    flyMapTo(CesiumMath.toRadians(c.lon), CesiumMath.toRadians(c.lat));
+  } else {
+    void teleportTo(c);
+  }
   citySelect.blur();
 });
 
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   keys.add(k);
+  if (k === 'escape' && mapMode) exitMapMode();
   if (k === 'r') void teleportTo(CITIES[currentCityIndex]);
   if (k === 'm' && roadOverlay) roadOverlay.show = !roadOverlay.show;
   if (k === 't') {
@@ -431,7 +510,7 @@ let dragging = false;
 let lastX = 0;
 let lastY = 0;
 canvas.addEventListener('pointerdown', (e) => {
-  if (isFreeCam()) return;
+  if (isFreeCam() || mapMode) return;
   dragging = true;
   lastX = e.clientX;
   lastY = e.clientY;
@@ -440,7 +519,7 @@ window.addEventListener('pointerup', () => {
   dragging = false;
 });
 window.addEventListener('pointermove', (e) => {
-  if (!dragging || isFreeCam()) return;
+  if (!dragging || isFreeCam() || mapMode) return;
   camYaw += (e.clientX - lastX) * 0.005;
   camPitchAdj = Math.max(-3, Math.min(28, camPitchAdj - (e.clientY - lastY) * 0.06));
   lastX = e.clientX;
@@ -449,7 +528,7 @@ window.addEventListener('pointermove', (e) => {
 canvas.addEventListener(
   'wheel',
   (e) => {
-    if (isFreeCam()) return;
+    if (isFreeCam() || mapMode) return;
     e.preventDefault();
     camZoom = Math.max(0.4, Math.min(3, camZoom * (e.deltaY > 0 ? 1.1 : 0.9)));
   },
@@ -475,6 +554,9 @@ viewer.scene.preRender.addEventListener(() => {
   let dt = (now - lastTime) / 1000;
   lastTime = now;
   if (dt > 0.1) dt = 0.1;
+
+  // In map mode the car is frozen and Cesium controls the camera.
+  if (mapMode) return;
 
   vehicle.update(dt, {
     throttle: keys.has('w') || keys.has('arrowup'),
@@ -602,7 +684,7 @@ viewer.scene.preRender.addEventListener(() => {
 // pick just updates camDistRatio, which the chase camera reads next frame.
 setInterval(() => {
   const pickScene = viewer.scene as any; // pickFromRay isn't in the public types
-  if (isFreeCam() || !pickScene.pickFromRay) {
+  if (mapMode || isFreeCam() || !pickScene.pickFromRay) {
     camDistRatio = 1;
     return;
   }
@@ -653,7 +735,7 @@ function castDown(startHeight: number): number | null {
 
 setInterval(() => {
   const s = viewer.scene as any;
-  if (!use3DTiles || !s.pickFromRay) return;
+  if (mapMode || !use3DTiles || !s.pickFromRay) return;
   try {
     const onSurface = (h: number) => {
       sampled3DHeight = h;
