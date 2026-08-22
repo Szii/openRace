@@ -6,7 +6,6 @@ import {
   Math as CesiumMath,
   Terrain,
   Color,
-  EllipsoidTerrainProvider,
   Cesium3DTileset,
   createOsmBuildingsAsync,
   createGooglePhotorealistic3DTileset,
@@ -294,25 +293,16 @@ function flyMapTo(lonRad: number, latRad: number): void {
   });
 }
 
-// Show/hide a red "no coverage" backdrop under the 3D mesh. It's a plain red
-// ellipsoid at sea level, so the Google mesh (at real elevation) occludes it
-// where coverage exists — leaving red only where there's no 3D data.
-const flatTerrain = new EllipsoidTerrainProvider();
+// Show/hide a red "no coverage" backdrop. The globe stays hidden and the scene
+// background is painted red, so anywhere without 3D mesh renders red while
+// covered cities render solid on top — no z-fighting with the mesh.
 function setCoverageBackdrop(on: boolean): void {
   if (!use3DTiles) return; // only meaningful in Google 3D mode
-  if (on) {
-    viewer.scene.terrainProvider = flatTerrain;
-    viewer.scene.globe.baseColor = Color.fromCssColorString('#c0231f');
-    for (let i = 0; i < viewer.imageryLayers.length; i++) {
-      viewer.imageryLayers.get(i).show = false;
-    }
-    viewer.scene.globe.show = true;
-  } else {
-    viewer.scene.globe.show = false;
-    for (let i = 0; i < viewer.imageryLayers.length; i++) {
-      viewer.imageryLayers.get(i).show = true;
-    }
-  }
+  const scene = viewer.scene;
+  scene.globe.show = false;
+  if (scene.skyBox) scene.skyBox.show = !on;
+  if (scene.skyAtmosphere) scene.skyAtmosphere.show = !on;
+  scene.backgroundColor = on ? Color.fromCssColorString('#c0231f') : Color.BLACK;
 }
 
 function enterMapMode(): void {
@@ -340,20 +330,14 @@ mapBtn.addEventListener('click', () => (mapMode ? exitMapMode() : enterMapMode()
 const pickHandler = new ScreenSpaceEventHandler(viewer.canvas);
 pickHandler.setInputAction((e: any) => {
   if (!mapMode) return;
+  // With the globe hidden, a position only comes back if we hit real 3D mesh;
+  // clicking the red background returns nothing.
   const pos = viewer.scene.pickPosition(e.position);
   if (!pos) {
     flashMapHint('No 3D coverage there — click a mapped (non-red) area.');
     return;
   }
   const carto = Cartographic.fromCartesian(pos);
-  // The red backdrop is a sea-level ellipsoid; the mesh is real elevation. A
-  // picked 3D-tile feature or a clearly non-sea-level height means real coverage.
-  const picked = viewer.scene.pick(e.position);
-  const onMesh = !!picked || Math.abs(carto.height) > 8;
-  if (!onMesh) {
-    flashMapHint('That area has no Google 3D — click a mapped (non-red) area.');
-    return;
-  }
   exitMapMode();
   void teleportToCoords(carto.longitude, carto.latitude, vehicle.heading, 'selected spot');
 }, ScreenSpaceEventType.LEFT_CLICK);
