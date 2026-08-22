@@ -314,6 +314,10 @@ async function loadWorld(): Promise<void> {
   // cities. Only fall back to terrain if the tileset itself can't be loaded.
   const startTiles = async (tileset: Cesium3DTileset, label: string): Promise<boolean> => {
     tileset.maximumScreenSpaceError = 20; // a bit coarser → smoother framerate
+    // Render tiles toward the horizon coarser — big FPS win for a low camera,
+    // barely noticeable since distant detail matters least when driving.
+    tileset.dynamicScreenSpaceError = true;
+    (tileset as any).dynamicScreenSpaceErrorFactor = 24;
     // Keep a big tile cache so driving around re-streams far less.
     (tileset as any).cacheBytes = 1_500_000_000;
     (tileset as any).maximumCacheOverflowBytes = 1_000_000_000;
@@ -572,8 +576,12 @@ viewer.scene.preRender.addEventListener(() => {
     const surf = surfaceIndex?.query(vehicle.lon, vehicle.lat);
     if (surf && (surf.kind === 'bridge' || tunnelsEnabled)) targetHeight = surf.height;
   }
-  const k = use3DTiles ? 0.4 : 0.18; // smoothing (ramps onto surfaces)
-  carHeight = isNaN(carHeight) ? targetHeight : carHeight + (targetHeight - carHeight) * k;
+  // Frame-rate-independent low-pass: a time constant (seconds) instead of a
+  // per-frame factor, so it's consistent at any FPS and glides over the noisy
+  // photogrammetry road surface instead of bobbing on every mesh wrinkle.
+  const heightTau = use3DTiles ? 0.11 : 0.05;
+  const kH = 1 - Math.exp(-dt / heightTau);
+  carHeight = isNaN(carHeight) ? targetHeight : carHeight + (targetHeight - carHeight) * kH;
   Cartesian3.fromRadians(vehicle.lon, vehicle.lat, carHeight + CAR_GROUND_OFFSET, undefined, carPos);
 
   // Pitch/roll the car to match the ground slope.
@@ -616,9 +624,9 @@ viewer.scene.preRender.addEventListener(() => {
     // camDistRatio (obstruction check) pulls the camera in past buildings.
     let camPos = Cartesian3.lerp(eye, desired, camDistRatio, new Cartesian3());
 
-    // Smooth the position for a bit of racing-style lag.
+    // Smooth the position (frame-rate-independent) for a bit of racing lag.
     if (!camPosSmooth) camPosSmooth = Cartesian3.clone(camPos, new Cartesian3());
-    else camPosSmooth = Cartesian3.lerp(camPosSmooth, camPos, 0.5, new Cartesian3());
+    else camPosSmooth = Cartesian3.lerp(camPosSmooth, camPos, 1 - Math.exp(-dt / 0.06), new Cartesian3());
     camPos = camPosSmooth;
 
     // Keep the camera from dipping below the ground (cheap, no pick). In 3D-tiles
@@ -679,7 +687,7 @@ setInterval(() => {
   } catch {
     camDistRatio = 1;
   }
-}, 120);
+}, 160);
 
 // Find the road height under the car, OUTSIDE the render loop (picking runs an
 // offscreen pass; doing it in preRender corrupts rendering). Cast a ray DOWN
@@ -738,6 +746,6 @@ setInterval(() => {
   } catch {
     /* tiles not ready under the car yet */
   }
-}, 55);
+}, 70);
 
 loadWorld();
