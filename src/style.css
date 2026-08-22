@@ -44,6 +44,42 @@ body {
   color: #ffd54a;
 }
 
+#citySelect {
+  position: fixed;
+  top: 14px;
+  left: 16px;
+  z-index: 6;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 7px 10px;
+  color: #fff;
+  background: rgba(10, 16, 32, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+#boundsMsg {
+  position: fixed;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  display: none;
+  padding: 12px 20px;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  background: rgba(180, 30, 30, 0.82);
+  border-radius: 8px;
+  text-shadow: 0 1px 3px #000;
+  pointer-events: none;
+}
+
+#boundsMsg.show {
+  display: block;
+}
+
 #loading {
   position: fixed;
   inset: 0;

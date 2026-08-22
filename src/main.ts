@@ -60,9 +60,41 @@ viewer.scene.screenSpaceCameraController.enableInputs = false;
 // ---------------------------------------------------------------------------
 // Car state
 // ---------------------------------------------------------------------------
-// Start in Srubec, near České Budějovice (Czech Budweis), Czech Republic.
-// Uses Google Photorealistic 3D Tiles (coverage permitting).
-const START = { lon: 14.5389, lat: 48.9689, headingDeg: 0 };
+// Cities with Google Photorealistic 3D coverage. Coordinates sit on a road so
+// the car spawns on the street. Pick one from the dropdown to teleport.
+interface City {
+  name: string;
+  lon: number;
+  lat: number;
+  heading: number;
+}
+const CITIES: City[] = [
+  { name: 'San Francisco, US', lon: -122.4014, lat: 37.7911, heading: 235 },
+  { name: 'New York, US', lon: -73.9855, lat: 40.758, heading: 180 },
+  { name: 'Los Angeles, US', lon: -118.261, lat: 34.0505, heading: 0 },
+  { name: 'Las Vegas, US', lon: -115.1726, lat: 36.11, heading: 0 },
+  { name: 'Chicago, US', lon: -87.6244, lat: 41.8825, heading: 0 },
+  { name: 'Miami, US', lon: -80.1918, lat: 25.77, heading: 0 },
+  { name: 'Seattle, US', lon: -122.335, lat: 47.61, heading: 0 },
+  { name: 'London, UK', lon: -0.1223, lat: 51.5079, heading: 90 },
+  { name: 'Paris, FR', lon: 2.305, lat: 48.87, heading: 120 },
+  { name: 'Berlin, DE', lon: 13.37, lat: 52.5145, heading: 90 },
+  { name: 'Amsterdam, NL', lon: 4.89, lat: 52.366, heading: 0 },
+  { name: 'Barcelona, ES', lon: 2.1686, lat: 41.388, heading: 0 },
+  { name: 'Madrid, ES', lon: -3.702, lat: 40.42, heading: 0 },
+  { name: 'Rome, IT', lon: 12.4924, lat: 41.903, heading: 0 },
+  { name: 'Vienna, AT', lon: 16.372, lat: 48.208, heading: 0 },
+  { name: 'Prague, CZ', lon: 14.4378, lat: 50.078, heading: 90 },
+  { name: 'Tokyo, JP', lon: 139.7454, lat: 35.66, heading: 0 },
+  { name: 'Sydney, AU', lon: 151.2093, lat: -33.87, heading: 0 },
+  { name: 'Toronto, CA', lon: -79.3832, lat: 43.648, heading: 0 },
+];
+let currentCityIndex = 0;
+const START = {
+  lon: CITIES[currentCityIndex].lon,
+  lat: CITIES[currentCityIndex].lat,
+  headingDeg: CITIES[currentCityIndex].heading,
+};
 
 const vehicle = new Vehicle(
   CesiumMath.toRadians(START.lon),
@@ -89,6 +121,22 @@ let carHeight = NaN; // smoothed height the car sits at
 const GOOGLE_P3DT_ASSET = 2275207; // Google Photorealistic 3D Tiles on Cesium ion
 let use3DTiles = false;
 let sampled3DHeight = NaN; // height of the 3D mesh under the car (sampled off-render)
+
+// Coverage tracking: block the car at the edge of the mapped 3D area.
+let established = false; // have we ever found ground for the car?
+let missCount = 0; // consecutive ticks with no surface below the car
+let outOfBounds = false;
+let lastGoodLon = NaN;
+let lastGoodLat = NaN;
+let lastGoodHeight = NaN;
+const boundsMsgEl = document.getElementById('boundsMsg')!;
+const citySelect = document.getElementById('citySelect') as HTMLSelectElement;
+
+function setOutOfBounds(v: boolean): void {
+  if (outOfBounds === v) return;
+  outOfBounds = v;
+  boundsMsgEl.classList.toggle('show', v);
+}
 
 // Align the glTF's nose with the travel direction (tweak by ±90/180 if needed).
 const MODEL_HEADING_OFFSET = CesiumMath.toRadians(-90);
@@ -185,41 +233,54 @@ async function clampCarToTiles(): Promise<boolean> {
 }
 
 function finishLoading(): void {
-  loadingEl.classList.add('hidden');
-  setTimeout(() => loadingEl.remove(), 700);
+  loadingEl.classList.add('hidden'); // kept in the DOM so teleports can reuse it
+}
+
+// Teleport the car to a city (the 3D tileset is global, so no reload needed).
+async function teleportTo(city: City): Promise<void> {
+  vehicle.lon = CesiumMath.toRadians(city.lon);
+  vehicle.lat = CesiumMath.toRadians(city.lat);
+  vehicle.heading = CesiumMath.toRadians(city.heading);
+  vehicle.speed = 0;
+  vehicle.steer = 0;
+  carHeight = NaN;
+  sampled3DHeight = NaN;
+  established = false;
+  missCount = 0;
+  setOutOfBounds(false);
+  camPosSmooth = undefined;
+  if (use3DTiles) {
+    loadingEl.textContent = `Loading ${city.name}…`;
+    loadingEl.classList.remove('hidden');
+    const ok = await clampCarToTiles();
+    loadingEl.classList.add('hidden');
+    if (!ok) setOutOfBounds(true); // no 3D mesh here — show the message
+  }
 }
 
 // ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
 async function loadWorld(): Promise<void> {
-  // Preferred: Google Photorealistic 3D Tiles — a real 3D mesh of the world the
-  // car drives on. Returns false if the tiles don't cover the start location, so
-  // we can tear them down and fall back to terrain + OSM.
-  const tryLoad3DTiles = async (tileset: Cesium3DTileset, label: string): Promise<boolean> => {
+  // Google Photorealistic 3D Tiles — a real 3D mesh the car drives on. The
+  // tileset is global; we keep it loaded and teleport the car between covered
+  // cities. Only fall back to terrain if the tileset itself can't be loaded.
+  const startTiles = async (tileset: Cesium3DTileset, label: string): Promise<boolean> => {
     viewer.scene.primitives.add(tileset);
     viewer.scene.globe.show = false; // the tiles bring their own terrain
     use3DTiles = true;
     loadingEl.textContent = 'Placing you on the map…';
-    if (await clampCarToTiles()) {
-      statusEl.textContent = label;
-      finishLoading();
-      return true;
-    }
-    // No coverage here — remove the tiles and restore the globe for the fallback.
-    console.warn('No Google 3D coverage at the start location; using terrain + OSM.');
-    viewer.scene.primitives.remove(tileset);
-    viewer.scene.globe.show = true;
-    use3DTiles = false;
-    return false;
+    await clampCarToTiles();
+    statusEl.textContent = label;
+    finishLoading();
+    return true;
   };
 
   if (hasIon) {
     loadingEl.textContent = 'Loading 3D world…';
     try {
-      if (await tryLoad3DTiles(await Cesium3DTileset.fromIonAssetId(GOOGLE_P3DT_ASSET), 'Google Photorealistic 3D')) {
-        return;
-      }
+      await startTiles(await Cesium3DTileset.fromIonAssetId(GOOGLE_P3DT_ASSET), 'Google Photorealistic 3D');
+      return;
     } catch (err) {
       console.warn('Google Photorealistic 3D Tiles unavailable, using fallback.', err);
       use3DTiles = false;
@@ -227,9 +288,8 @@ async function loadWorld(): Promise<void> {
     }
   } else if (googleKey) {
     try {
-      if (await tryLoad3DTiles(await (createGooglePhotorealistic3DTileset as any)({ key: googleKey }), 'Google 3D')) {
-        return;
-      }
+      await startTiles(await (createGooglePhotorealistic3DTileset as any)({ key: googleKey }), 'Google 3D');
+      return;
     } catch (err) {
       console.warn('Google 3D Tiles (key) failed, using fallback.', err);
       use3DTiles = false;
@@ -312,10 +372,24 @@ function cycleCameraView(): void {
   statusEl.dataset.view = CAM_MODES[camModeIndex].name;
 }
 
+// Populate the city dropdown and teleport on selection.
+CITIES.forEach((c, i) => {
+  const opt = document.createElement('option');
+  opt.value = String(i);
+  opt.textContent = c.name;
+  citySelect.appendChild(opt);
+});
+citySelect.value = String(currentCityIndex);
+citySelect.addEventListener('change', () => {
+  currentCityIndex = parseInt(citySelect.value, 10);
+  void teleportTo(CITIES[currentCityIndex]);
+  citySelect.blur();
+});
+
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   keys.add(k);
-  if (k === 'r') vehicle.reset();
+  if (k === 'r') void teleportTo(CITIES[currentCityIndex]);
   if (k === 'm' && roadOverlay) roadOverlay.show = !roadOverlay.show;
   if (k === 't') {
     tunnelsEnabled = !tunnelsEnabled;
@@ -400,6 +474,13 @@ viewer.scene.preRender.addEventListener(() => {
   const carto = Cartographic.fromCartesian(p);
   vehicle.lon = carto.longitude;
   vehicle.lat = carto.latitude;
+
+  // Don't let the car leave the mapped 3D area: hold it at the last covered spot.
+  if (use3DTiles && outOfBounds && !isNaN(lastGoodLon)) {
+    vehicle.lon = lastGoodLon;
+    vehicle.lat = lastGoodLat;
+    vehicle.speed = 0;
+  }
 
   // Choose the height the car sits at.
   let targetHeight: number;
@@ -542,12 +623,21 @@ setInterval(() => {
     const local = isNaN(carHeight) ? null : castDown(carHeight + RAY_START_ABOVE);
     if (local !== null) {
       sampled3DHeight = local;
-    } else if (isNaN(sampled3DHeight)) {
-      // Never found ground (e.g. spawned in the void) → search from high up.
+      established = true;
+      missCount = 0;
+      lastGoodLon = vehicle.lon;
+      lastGoodLat = vehicle.lat;
+      lastGoodHeight = local;
+      setOutOfBounds(false);
+    } else if (!established) {
+      // Never found ground yet (e.g. spawned before tiles streamed) → search high.
       const recovered = castDown(9000);
       if (recovered !== null) sampled3DHeight = recovered;
+    } else {
+      // Established but nothing below now → we're leaving the mapped area.
+      missCount++;
+      if (missCount >= 3) setOutOfBounds(true);
     }
-    // A transient local miss once established keeps the last good height.
   } catch {
     /* tiles not ready under the car yet */
   }
