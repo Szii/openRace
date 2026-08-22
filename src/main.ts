@@ -630,25 +630,31 @@ setInterval(() => {
   const s = viewer.scene as any;
   if (!use3DTiles || !s.pickFromRay) return;
   try {
-    // Local ray just above the car — first surface below it, so overhead trees
-    // and stacked roads are ignored.
-    const local = isNaN(carHeight) ? null : castDown(carHeight + RAY_START_ABOVE);
-    if (local !== null) {
-      sampled3DHeight = local;
+    const onSurface = (h: number) => {
+      sampled3DHeight = h;
       established = true;
       missCount = 0;
       lastGoodLon = vehicle.lon;
       lastGoodLat = vehicle.lat;
-      lastGoodHeight = local;
+      lastGoodHeight = h;
       setOutOfBounds(false);
-    } else if (!established) {
-      // Never found ground yet (e.g. spawned before tiles streamed) → search high.
-      const recovered = castDown(9000);
-      if (recovered !== null) sampled3DHeight = recovered;
+    };
+    // Local ray just above the car — first surface below it, so overhead trees
+    // and stacked roads are ignored during normal driving.
+    const local = isNaN(carHeight) ? null : castDown(carHeight + RAY_START_ABOVE);
+    if (local !== null) {
+      onSurface(local);
     } else {
-      // Established but nothing below now → we're leaving the mapped area.
-      missCount++;
-      if (missCount >= 3) setOutOfBounds(true);
+      // Nothing just above the car. Before declaring an edge, look from high up:
+      // the surface may have shifted up (LOD refining) or we spawned below it.
+      const high = castDown(9000);
+      if (high !== null) {
+        onSurface(high);
+      } else if (established) {
+        // Genuinely no mesh here → we're leaving the mapped area.
+        missCount++;
+        if (missCount >= 3) setOutOfBounds(true);
+      }
     }
   } catch {
     /* tiles not ready under the car yet */
