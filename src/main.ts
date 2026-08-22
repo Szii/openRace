@@ -193,25 +193,33 @@ function finishLoading(): void {
 // World
 // ---------------------------------------------------------------------------
 async function loadWorld(): Promise<void> {
-  // Preferred: Google Photorealistic 3D Tiles — a real 3D mesh of the world
-  // (roads, bridges, terrain) that the car drives on the actual surface of.
-  const load3DTiles = async (tileset: Cesium3DTileset, label: string) => {
+  // Preferred: Google Photorealistic 3D Tiles — a real 3D mesh of the world the
+  // car drives on. Returns false if the tiles don't cover the start location, so
+  // we can tear them down and fall back to terrain + OSM.
+  const tryLoad3DTiles = async (tileset: Cesium3DTileset, label: string): Promise<boolean> => {
     viewer.scene.primitives.add(tileset);
     viewer.scene.globe.show = false; // the tiles bring their own terrain
     use3DTiles = true;
     loadingEl.textContent = 'Placing you on the map…';
-    const placed = await clampCarToTiles();
-    statusEl.textContent = placed
-      ? label
-      : `${label} — no 3D coverage here (try a major city)`;
-    finishLoading();
+    if (await clampCarToTiles()) {
+      statusEl.textContent = label;
+      finishLoading();
+      return true;
+    }
+    // No coverage here — remove the tiles and restore the globe for the fallback.
+    console.warn('No Google 3D coverage at the start location; using terrain + OSM.');
+    viewer.scene.primitives.remove(tileset);
+    viewer.scene.globe.show = true;
+    use3DTiles = false;
+    return false;
   };
 
   if (hasIon) {
     loadingEl.textContent = 'Loading 3D world…';
     try {
-      await load3DTiles(await Cesium3DTileset.fromIonAssetId(GOOGLE_P3DT_ASSET), 'Google Photorealistic 3D');
-      return;
+      if (await tryLoad3DTiles(await Cesium3DTileset.fromIonAssetId(GOOGLE_P3DT_ASSET), 'Google Photorealistic 3D')) {
+        return;
+      }
     } catch (err) {
       console.warn('Google Photorealistic 3D Tiles unavailable, using fallback.', err);
       use3DTiles = false;
@@ -219,8 +227,9 @@ async function loadWorld(): Promise<void> {
     }
   } else if (googleKey) {
     try {
-      await load3DTiles(await (createGooglePhotorealistic3DTileset as any)({ key: googleKey }), 'Google 3D');
-      return;
+      if (await tryLoad3DTiles(await (createGooglePhotorealistic3DTileset as any)({ key: googleKey }), 'Google 3D')) {
+        return;
+      }
     } catch (err) {
       console.warn('Google 3D Tiles (key) failed, using fallback.', err);
       use3DTiles = false;
@@ -280,7 +289,9 @@ async function loadWorld(): Promise<void> {
     roadStatus = 'roads failed';
   }
 
-  statusEl.textContent = [buildingStatus, roadStatus].filter(Boolean).join(' · ');
+  statusEl.textContent = ['Cesium 3D terrain', buildingStatus, roadStatus]
+    .filter(Boolean)
+    .join(' · ');
   finishLoading();
 }
 
