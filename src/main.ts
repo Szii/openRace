@@ -14,8 +14,6 @@ import {
   Ray,
   CallbackProperty,
   OpenStreetMapImageryProvider,
-  ScreenSpaceEventHandler,
-  ScreenSpaceEventType,
 } from 'cesium';
 import { fetchRoads, fetchBuildings } from './osm';
 import { buildRoads } from './roads';
@@ -70,26 +68,63 @@ interface City {
   lat: number;
   heading: number;
 }
+// A broad selection of cities with Google Photorealistic 3D coverage. (Google's
+// full coverage is hundreds of cities; these are notable ones.) Coordinates sit
+// near the centre on a road so the car spawns on the street.
 const CITIES: City[] = [
+  // North America
   { name: 'San Francisco, US', lon: -122.4014, lat: 37.7911, heading: 235 },
-  { name: 'New York, US', lon: -73.9855, lat: 40.758, heading: 180 },
   { name: 'Los Angeles, US', lon: -118.261, lat: 34.0505, heading: 0 },
+  { name: 'San Diego, US', lon: -117.1611, lat: 32.7157, heading: 0 },
   { name: 'Las Vegas, US', lon: -115.1726, lat: 36.11, heading: 0 },
+  { name: 'Phoenix, US', lon: -112.074, lat: 33.4484, heading: 0 },
+  { name: 'Seattle, US', lon: -122.335, lat: 47.6089, heading: 0 },
+  { name: 'Denver, US', lon: -104.9903, lat: 39.7392, heading: 0 },
   { name: 'Chicago, US', lon: -87.6244, lat: 41.8825, heading: 0 },
+  { name: 'New York, US', lon: -73.9855, lat: 40.758, heading: 180 },
+  { name: 'Boston, US', lon: -71.0589, lat: 42.3601, heading: 0 },
+  { name: 'Washington, DC, US', lon: -77.0364, lat: 38.8977, heading: 0 },
   { name: 'Miami, US', lon: -80.1918, lat: 25.77, heading: 0 },
-  { name: 'Seattle, US', lon: -122.335, lat: 47.61, heading: 0 },
+  { name: 'Houston, US', lon: -95.3698, lat: 29.7604, heading: 0 },
+  { name: 'Dallas, US', lon: -96.797, lat: 32.7767, heading: 0 },
+  { name: 'Austin, US', lon: -97.7431, lat: 30.2672, heading: 0 },
+  { name: 'Atlanta, US', lon: -84.388, lat: 33.749, heading: 0 },
+  { name: 'Toronto, CA', lon: -79.3832, lat: 43.648, heading: 0 },
+  { name: 'Montreal, CA', lon: -73.5673, lat: 45.5017, heading: 0 },
+  { name: 'Vancouver, CA', lon: -123.1207, lat: 49.2827, heading: 0 },
+  { name: 'Mexico City, MX', lon: -99.1332, lat: 19.4326, heading: 0 },
+  // Europe
   { name: 'London, UK', lon: -0.1223, lat: 51.5079, heading: 90 },
+  { name: 'Manchester, UK', lon: -2.2426, lat: 53.4808, heading: 0 },
+  { name: 'Edinburgh, UK', lon: -3.1883, lat: 55.9533, heading: 0 },
+  { name: 'Dublin, IE', lon: -6.2603, lat: 53.3498, heading: 0 },
   { name: 'Paris, FR', lon: 2.305, lat: 48.87, heading: 120 },
-  { name: 'Berlin, DE', lon: 13.37, lat: 52.5145, heading: 90 },
+  { name: 'Lyon, FR', lon: 4.8357, lat: 45.764, heading: 0 },
   { name: 'Amsterdam, NL', lon: 4.89, lat: 52.366, heading: 0 },
-  { name: 'Barcelona, ES', lon: 2.1686, lat: 41.388, heading: 0 },
-  { name: 'Madrid, ES', lon: -3.702, lat: 40.42, heading: 0 },
-  { name: 'Rome, IT', lon: 12.4924, lat: 41.903, heading: 0 },
+  { name: 'Brussels, BE', lon: 4.3517, lat: 50.8503, heading: 0 },
+  { name: 'Berlin, DE', lon: 13.37, lat: 52.5145, heading: 90 },
+  { name: 'Munich, DE', lon: 11.582, lat: 48.1351, heading: 0 },
+  { name: 'Frankfurt, DE', lon: 8.6821, lat: 50.1109, heading: 0 },
+  { name: 'Hamburg, DE', lon: 9.9937, lat: 53.5511, heading: 0 },
+  { name: 'Zurich, CH', lon: 8.5417, lat: 47.3769, heading: 0 },
   { name: 'Vienna, AT', lon: 16.372, lat: 48.208, heading: 0 },
   { name: 'Prague, CZ', lon: 14.4378, lat: 50.078, heading: 90 },
+  { name: 'Madrid, ES', lon: -3.702, lat: 40.42, heading: 0 },
+  { name: 'Barcelona, ES', lon: 2.1686, lat: 41.388, heading: 0 },
+  { name: 'Lisbon, PT', lon: -9.1393, lat: 38.7223, heading: 0 },
+  { name: 'Rome, IT', lon: 12.4924, lat: 41.903, heading: 0 },
+  { name: 'Milan, IT', lon: 9.19, lat: 45.4642, heading: 0 },
+  { name: 'Copenhagen, DK', lon: 12.5683, lat: 55.6761, heading: 0 },
+  { name: 'Stockholm, SE', lon: 18.0686, lat: 59.3293, heading: 0 },
+  { name: 'Oslo, NO', lon: 10.7522, lat: 59.9139, heading: 0 },
+  { name: 'Warsaw, PL', lon: 21.0122, lat: 52.2297, heading: 0 },
+  // Asia-Pacific
   { name: 'Tokyo, JP', lon: 139.7454, lat: 35.66, heading: 0 },
+  { name: 'Osaka, JP', lon: 135.5023, lat: 34.6937, heading: 0 },
   { name: 'Sydney, AU', lon: 151.2093, lat: -33.87, heading: 0 },
-  { name: 'Toronto, CA', lon: -79.3832, lat: 43.648, heading: 0 },
+  { name: 'Melbourne, AU', lon: 144.9631, lat: -37.8136, heading: 0 },
+  { name: 'Brisbane, AU', lon: 153.0251, lat: -27.4698, heading: 0 },
+  { name: 'Auckland, NZ', lon: 174.7633, lat: -36.8485, heading: 0 },
 ];
 let currentCityIndex = 0;
 const START = {
@@ -269,65 +304,6 @@ async function teleportTo(city: City): Promise<void> {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Map mode: fly up to a top-down view and click the mesh to pick a spawn point.
-// ---------------------------------------------------------------------------
-let mapMode = false;
-const mapBtn = document.getElementById('mapBtn')!;
-const mapHintEl = document.getElementById('mapHint')!;
-const MAP_HINT_DEFAULT = mapHintEl.textContent || '';
-let hintTimer = 0;
-
-function flashMapHint(msg: string): void {
-  mapHintEl.textContent = msg;
-  clearTimeout(hintTimer);
-  hintTimer = window.setTimeout(() => (mapHintEl.textContent = MAP_HINT_DEFAULT), 2600);
-}
-
-function flyMapTo(lonRad: number, latRad: number): void {
-  viewer.camera.flyTo({
-    destination: Cartesian3.fromRadians(lonRad, latRad, 2200),
-    orientation: { heading: 0, pitch: CesiumMath.toRadians(-72), roll: 0 },
-    duration: 1.4,
-  });
-}
-
-function enterMapMode(): void {
-  mapMode = true;
-  mapBtn.textContent = '✕ Close';
-  mapHintEl.textContent = MAP_HINT_DEFAULT;
-  mapHintEl.classList.add('show');
-  viewer.scene.screenSpaceCameraController.enableInputs = true; // let the user pan/zoom
-  // The Google tileset already renders the whole Earth (satellite globally, 3D in
-  // cities), so it IS the map — no Cesium globe needed (would just z-fight).
-  flyMapTo(vehicle.lon, vehicle.lat);
-}
-
-function exitMapMode(): void {
-  mapMode = false;
-  mapBtn.textContent = '🗺 Map';
-  mapHintEl.classList.remove('show');
-  viewer.scene.screenSpaceCameraController.enableInputs = isFreeCam();
-  camPosSmooth = undefined;
-}
-
-mapBtn.addEventListener('click', () => (mapMode ? exitMapMode() : enterMapMode()));
-
-// Click the map to spawn there (only where the 3D mesh exists).
-const pickHandler = new ScreenSpaceEventHandler(viewer.canvas);
-pickHandler.setInputAction((e: any) => {
-  if (!mapMode) return;
-  // With the globe hidden, a position only comes back if we hit real 3D mesh;
-  // clicking the red background returns nothing.
-  const pos = viewer.scene.pickPosition(e.position);
-  if (!pos) {
-    flashMapHint('Click on the map (not empty space) to spawn.');
-    return;
-  }
-  const carto = Cartographic.fromCartesian(pos);
-  exitMapMode();
-  void teleportToCoords(carto.longitude, carto.latitude, vehicle.heading, 'selected spot');
-}, ScreenSpaceEventType.LEFT_CLICK);
 
 // ---------------------------------------------------------------------------
 // World
@@ -483,20 +459,13 @@ CITIES.forEach((c, i) => {
 citySelect.value = String(currentCityIndex);
 citySelect.addEventListener('change', () => {
   currentCityIndex = parseInt(citySelect.value, 10);
-  const c = CITIES[currentCityIndex];
-  if (mapMode) {
-    // In map mode, fly the overview to the city so you can click a spot.
-    flyMapTo(CesiumMath.toRadians(c.lon), CesiumMath.toRadians(c.lat));
-  } else {
-    void teleportTo(c);
-  }
+  void teleportTo(CITIES[currentCityIndex]);
   citySelect.blur();
 });
 
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   keys.add(k);
-  if (k === 'escape' && mapMode) exitMapMode();
   if (k === 'r') void teleportTo(CITIES[currentCityIndex]);
   if (k === 'm' && roadOverlay) roadOverlay.show = !roadOverlay.show;
   if (k === 't') {
@@ -516,7 +485,7 @@ let dragging = false;
 let lastX = 0;
 let lastY = 0;
 canvas.addEventListener('pointerdown', (e) => {
-  if (isFreeCam() || mapMode) return;
+  if (isFreeCam()) return;
   dragging = true;
   lastX = e.clientX;
   lastY = e.clientY;
@@ -525,7 +494,7 @@ window.addEventListener('pointerup', () => {
   dragging = false;
 });
 window.addEventListener('pointermove', (e) => {
-  if (!dragging || isFreeCam() || mapMode) return;
+  if (!dragging || isFreeCam()) return;
   camYaw += (e.clientX - lastX) * 0.005;
   camPitchAdj = Math.max(-3, Math.min(28, camPitchAdj - (e.clientY - lastY) * 0.06));
   lastX = e.clientX;
@@ -534,7 +503,7 @@ window.addEventListener('pointermove', (e) => {
 canvas.addEventListener(
   'wheel',
   (e) => {
-    if (isFreeCam() || mapMode) return;
+    if (isFreeCam()) return;
     e.preventDefault();
     camZoom = Math.max(0.4, Math.min(3, camZoom * (e.deltaY > 0 ? 1.1 : 0.9)));
   },
@@ -560,9 +529,6 @@ viewer.scene.preRender.addEventListener(() => {
   let dt = (now - lastTime) / 1000;
   lastTime = now;
   if (dt > 0.1) dt = 0.1;
-
-  // In map mode the car is frozen and Cesium controls the camera.
-  if (mapMode) return;
 
   vehicle.update(dt, {
     throttle: keys.has('w') || keys.has('arrowup'),
@@ -690,7 +656,7 @@ viewer.scene.preRender.addEventListener(() => {
 // pick just updates camDistRatio, which the chase camera reads next frame.
 setInterval(() => {
   const pickScene = viewer.scene as any; // pickFromRay isn't in the public types
-  if (mapMode || isFreeCam() || !pickScene.pickFromRay) {
+  if (isFreeCam() || !pickScene.pickFromRay) {
     camDistRatio = 1;
     return;
   }
@@ -741,7 +707,7 @@ function castDown(startHeight: number): number | null {
 
 setInterval(() => {
   const s = viewer.scene as any;
-  if (mapMode || !use3DTiles || !s.pickFromRay) return;
+  if (!use3DTiles || !s.pickFromRay) return;
   try {
     const onSurface = (h: number) => {
       sampled3DHeight = h;
