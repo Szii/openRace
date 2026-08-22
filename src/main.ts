@@ -115,6 +115,7 @@ let tunnelsEnabled = false;
 // Drivable-surface index: lets the car ramp onto bridge decks / into tunnels.
 let surfaceIndex: SurfaceIndex | undefined;
 let carHeight = NaN; // smoothed height the car sits at
+let prevCarHeight = NaN; // last frame's height (for slope-from-motion pitch)
 
 // Real 3D world (Google Photorealistic 3D Tiles). When active, the car drives
 // on the actual mesh surface instead of terrain + synthetic roads.
@@ -145,8 +146,8 @@ const CAR_GROUND_OFFSET = 0.2; // metres above sampled ground
 // Camera views (cycle with C). dist = behind the car, height = above it,
 // lookAhead = how far ahead it aims. The last entry is a free/orbit camera.
 const CAM_MODES = [
-  { name: 'Chase', dist: 11, height: 4.5, lookAhead: 6 },
-  { name: 'Far', dist: 18, height: 8, lookAhead: 8 },
+  { name: 'Chase', dist: 12, height: 6, lookAhead: 6 },
+  { name: 'Far', dist: 20, height: 9, lookAhead: 8 },
   { name: 'Hood', dist: 4, height: 2.2, lookAhead: 16 },
   { name: 'Top', dist: 0.5, height: 30, lookAhead: 1 },
   { name: 'Free', dist: 0, height: 0, lookAhead: 0 },
@@ -209,25 +210,18 @@ const carEntity = viewer.entities.add({
   model: { uri: '/models/car.glb', scale: 0.55 },
 });
 
-// Settle the car onto the 3D-tiles mesh before the scene is revealed. Retries
-// because the tiles under the car may still be streaming in. Returns true once
-// a real surface height is found.
+// Settle the car onto the 3D-tiles mesh before the scene is revealed. Uses a
+// cheap high-altitude ray against whatever tiles are loaded (coarse is fine),
+// polling until tiles stream in. Much faster than forcing most-detailed tiles.
 async function clampCarToTiles(): Promise<boolean> {
-  const s = viewer.scene as any;
-  if (!s.sampleHeightMostDetailed) return false;
-  for (let attempt = 0; attempt < 15; attempt++) {
-    try {
-      const carto = new Cartographic(vehicle.lon, vehicle.lat, -9999);
-      const [res] = await s.sampleHeightMostDetailed([carto], [carEntity]);
-      if (res && isFinite(res.height) && res.height > -9000) {
-        sampled3DHeight = res.height;
-        carHeight = res.height;
-        return true;
-      }
-    } catch {
-      /* keep retrying */
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const h = castDown(9000);
+    if (h !== null) {
+      sampled3DHeight = h;
+      carHeight = h;
+      return true;
     }
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 150));
   }
   return false;
 }
@@ -266,6 +260,10 @@ async function loadWorld(): Promise<void> {
   // tileset is global; we keep it loaded and teleport the car between covered
   // cities. Only fall back to terrain if the tileset itself can't be loaded.
   const startTiles = async (tileset: Cesium3DTileset, label: string): Promise<boolean> => {
+    tileset.maximumScreenSpaceError = 16; // default sharpness
+    // Keep a big tile cache so driving around re-streams far less.
+    (tileset as any).cacheBytes = 1_500_000_000;
+    (tileset as any).maximumCacheOverflowBytes = 1_000_000_000;
     viewer.scene.primitives.add(tileset);
     viewer.scene.globe.show = false; // the tiles bring their own terrain
     use3DTiles = true;
@@ -499,21 +497,35 @@ viewer.scene.preRender.addEventListener(() => {
   carHeight = isNaN(carHeight) ? targetHeight : carHeight + (targetHeight - carHeight) * k;
   Cartesian3.fromRadians(vehicle.lon, vehicle.lat, carHeight + CAR_GROUND_OFFSET, undefined, carPos);
 
-  // Pitch/roll the car to match the ground slope (nose up on hills, tilt in turns
-  // that cross a camber). Sampled with small finite differences, then smoothed.
-  const step = 3;
-  const fx = Math.sin(vehicle.heading);
-  const fy = Math.cos(vehicle.heading);
-  const rx = Math.cos(vehicle.heading); // right = heading + 90°
-  const ry = -Math.sin(vehicle.heading);
-  const hF = groundHeightAt(carPos, fx * step, fy * step);
-  const hB = groundHeightAt(carPos, -fx * step, -fy * step);
-  const hR = groundHeightAt(carPos, rx * step, ry * step);
-  const hL = groundHeightAt(carPos, -rx * step, -ry * step);
-  const targetPitch = Math.atan2(hF - hB, 2 * step);
-  const targetRoll = Math.atan2(hR - hL, 2 * step);
-  modelPitch += (targetPitch - modelPitch) * 0.15;
-  modelRoll += (targetRoll - modelRoll) * 0.15;
+  // Pitch/roll the car to match the ground slope.
+  if (use3DTiles) {
+    // Derive the road grade from how the mesh height changes as we move (cheap —
+    // no extra picks). Only while moving; otherwise ease pitch back to flat.
+    const horiz = Math.abs(vehicle.speed) * dt;
+    if (horiz > 0.05 && !isNaN(prevCarHeight)) {
+      const dir = vehicle.speed >= 0 ? 1 : -1;
+      let targetPitch = Math.atan2((carHeight - prevCarHeight) * dir, horiz);
+      targetPitch = Math.max(-0.5, Math.min(0.5, targetPitch));
+      modelPitch += (targetPitch - modelPitch) * 0.1;
+    } else {
+      modelPitch += (0 - modelPitch) * 0.05;
+    }
+    modelRoll += (0 - modelRoll) * 0.1;
+  } else {
+    // Terrain mode: sample nearby heights directly (finite differences).
+    const step = 3;
+    const fx = Math.sin(vehicle.heading);
+    const fy = Math.cos(vehicle.heading);
+    const rx = Math.cos(vehicle.heading); // right = heading + 90°
+    const ry = -Math.sin(vehicle.heading);
+    const hF = groundHeightAt(carPos, fx * step, fy * step);
+    const hB = groundHeightAt(carPos, -fx * step, -fy * step);
+    const hR = groundHeightAt(carPos, rx * step, ry * step);
+    const hL = groundHeightAt(carPos, -rx * step, -ry * step);
+    modelPitch += (Math.atan2(hF - hB, 2 * step) - modelPitch) * 0.15;
+    modelRoll += (Math.atan2(hR - hL, 2 * step) - modelRoll) * 0.15;
+  }
+  prevCarHeight = carHeight;
 
   // HUD
   speedEl.textContent = `${Math.round(Math.abs(vehicle.speed) * 3.6)} km/h`;
