@@ -274,15 +274,35 @@ async function loadWorld(): Promise<void> {
     return true;
   };
 
+  let googleFailed = false;
   if (hasIon) {
-    loadingEl.textContent = 'Loading 3D world…';
-    try {
-      await startTiles(await Cesium3DTileset.fromIonAssetId(GOOGLE_P3DT_ASSET), 'Google Photorealistic 3D');
-      return;
-    } catch (err) {
-      console.warn('Google Photorealistic 3D Tiles unavailable, using fallback.', err);
+    loadingEl.textContent = 'Loading Google 3D…';
+    // The load can fail transiently (Google rate-limits sessions); retry first.
+    let tileset: Cesium3DTileset | null = null;
+    for (let i = 0; i < 4 && !tileset; i++) {
+      try {
+        tileset = await Cesium3DTileset.fromIonAssetId(GOOGLE_P3DT_ASSET);
+      } catch (err) {
+        console.warn(`Google 3D load attempt ${i + 1} failed; retrying…`, err);
+        await new Promise((r) => setTimeout(r, 900));
+      }
+    }
+    if (tileset) {
+      try {
+        await startTiles(tileset, 'Google Photorealistic 3D');
+        return;
+      } catch (err) {
+        console.warn('Google 3D tiles failed after load; using fallback.', err);
+        viewer.scene.primitives.remove(tileset);
+        use3DTiles = false;
+        viewer.scene.globe.show = true;
+        googleFailed = true;
+      }
+    } else {
+      console.warn('Google 3D unavailable after retries; using terrain fallback.');
       use3DTiles = false;
       viewer.scene.globe.show = true;
+      googleFailed = true;
     }
   } else if (googleKey) {
     try {
@@ -292,6 +312,7 @@ async function loadWorld(): Promise<void> {
       console.warn('Google 3D Tiles (key) failed, using fallback.', err);
       use3DTiles = false;
       viewer.scene.globe.show = true;
+      googleFailed = true;
     }
   }
 
@@ -347,7 +368,11 @@ async function loadWorld(): Promise<void> {
     roadStatus = 'roads failed';
   }
 
-  statusEl.textContent = ['Cesium 3D terrain', buildingStatus, roadStatus]
+  statusEl.textContent = [
+    googleFailed ? 'Google 3D failed — terrain (reload to retry)' : 'Cesium 3D terrain',
+    buildingStatus,
+    roadStatus,
+  ]
     .filter(Boolean)
     .join(' · ');
   finishLoading();
