@@ -298,9 +298,8 @@ function enterMapMode(): void {
   mapHintEl.textContent = MAP_HINT_DEFAULT;
   mapHintEl.classList.add('show');
   viewer.scene.screenSpaceCameraController.enableInputs = true; // let the user pan/zoom
-  // Show the satellite globe so there's a map to navigate; the Google tileset
-  // renders 3D cities on top of it. Hidden again for driving.
-  if (use3DTiles) viewer.scene.globe.show = true;
+  // The Google tileset already renders the whole Earth (satellite globally, 3D in
+  // cities), so it IS the map — no Cesium globe needed (would just z-fight).
   flyMapTo(vehicle.lon, vehicle.lat);
 }
 
@@ -309,7 +308,6 @@ function exitMapMode(): void {
   mapBtn.textContent = '🗺 Map';
   mapHintEl.classList.remove('show');
   viewer.scene.screenSpaceCameraController.enableInputs = isFreeCam();
-  if (use3DTiles) viewer.scene.globe.show = false;
   camPosSmooth = undefined;
 }
 
