@@ -5,7 +5,6 @@ import {
   Cartographic,
   Math as CesiumMath,
   Terrain,
-  Color,
   Cesium3DTileset,
   createOsmBuildingsAsync,
   createGooglePhotorealistic3DTileset,
@@ -293,25 +292,15 @@ function flyMapTo(lonRad: number, latRad: number): void {
   });
 }
 
-// Show/hide a red "no coverage" backdrop. The globe stays hidden and the scene
-// background is painted red, so anywhere without 3D mesh renders red while
-// covered cities render solid on top — no z-fighting with the mesh.
-function setCoverageBackdrop(on: boolean): void {
-  if (!use3DTiles) return; // only meaningful in Google 3D mode
-  const scene = viewer.scene;
-  scene.globe.show = false;
-  if (scene.skyBox) scene.skyBox.show = !on;
-  if (scene.skyAtmosphere) scene.skyAtmosphere.show = !on;
-  scene.backgroundColor = on ? Color.fromCssColorString('#c0231f') : Color.BLACK;
-}
-
 function enterMapMode(): void {
   mapMode = true;
   mapBtn.textContent = '✕ Close';
   mapHintEl.textContent = MAP_HINT_DEFAULT;
   mapHintEl.classList.add('show');
   viewer.scene.screenSpaceCameraController.enableInputs = true; // let the user pan/zoom
-  setCoverageBackdrop(true);
+  // Show the satellite globe so there's a map to navigate; the Google tileset
+  // renders 3D cities on top of it. Hidden again for driving.
+  if (use3DTiles) viewer.scene.globe.show = true;
   flyMapTo(vehicle.lon, vehicle.lat);
 }
 
@@ -320,7 +309,7 @@ function exitMapMode(): void {
   mapBtn.textContent = '🗺 Map';
   mapHintEl.classList.remove('show');
   viewer.scene.screenSpaceCameraController.enableInputs = isFreeCam();
-  setCoverageBackdrop(false);
+  if (use3DTiles) viewer.scene.globe.show = false;
   camPosSmooth = undefined;
 }
 
@@ -334,7 +323,7 @@ pickHandler.setInputAction((e: any) => {
   // clicking the red background returns nothing.
   const pos = viewer.scene.pickPosition(e.position);
   if (!pos) {
-    flashMapHint('No 3D coverage there — click a mapped (non-red) area.');
+    flashMapHint('Click on the map (not empty space) to spawn.');
     return;
   }
   const carto = Cartographic.fromCartesian(pos);
